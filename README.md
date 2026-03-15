@@ -5,6 +5,14 @@ cupidwm
 custom layouts, scratchpads, swallowing, monitor-aware behavior, and compile-time
 configuration through `config.h`.
 
+Screenshot
+----------
+
+![cupidwm screenshot](img/cupidwm.png)
+
+Shown above is `cupidwm` running on Arch Linux on X11, with Visual Studio Code open,
+`st` open, and `cupidfetch` open in a terminal.
+
 Features
 --------
 
