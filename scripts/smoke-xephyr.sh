@@ -2,11 +2,28 @@
 set -euo pipefail
 
 WM_BIN="${1:-./cupidwm}"
+HOST_DISPLAY="${DISPLAY:-}"
 DISPLAY_NUM="${DISPLAY_NUM:-99}"
-export DISPLAY=":${DISPLAY_NUM}"
+TEST_DISPLAY=""
 
-LOG_DIR="${TMPDIR:-/tmp}/cupidwm-smoke"
-mkdir -p "${LOG_DIR}"
+if [ -z "${HOST_DISPLAY}" ]; then
+	echo "smoke test failed: host DISPLAY is not set (run from an X session, or preserve DISPLAY when using sudo)" >&2
+	exit 1
+fi
+
+if [ -n "${LOG_DIR:-}" ]; then
+	mkdir -p "${LOG_DIR}" 2>/dev/null || {
+		echo "smoke test failed: unable to create LOG_DIR=${LOG_DIR}" >&2
+		exit 1
+	}
+else
+	LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cupidwm-smoke.XXXXXX")"
+fi
+
+if [ ! -w "${LOG_DIR}" ]; then
+	echo "smoke test failed: log directory is not writable: ${LOG_DIR}" >&2
+	exit 1
+fi
 
 need_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -15,7 +32,7 @@ need_cmd() {
 	fi
 }
 
-for cmd in Xephyr xdpyinfo xprop xdotool xterm xwininfo awk sed grep; do
+for cmd in Xephyr xdpyinfo xprop xdotool xterm xwininfo awk sed grep mktemp; do
 	need_cmd "${cmd}"
 done
 
@@ -61,6 +78,21 @@ wait_for_display() {
 			return 1
 		fi
 		sleep 0.1
+	done
+	return 1
+}
+
+choose_test_display() {
+	local num="${DISPLAY_NUM}"
+	for _ in $(seq 1 50); do
+		if [ ! -e "/tmp/.X${num}-lock" ]; then
+			if ! DISPLAY=":${num}" xdpyinfo >/dev/null 2>&1; then
+				TEST_DISPLAY=":${num}"
+				export DISPLAY="${TEST_DISPLAY}"
+				return 0
+			fi
+		fi
+		num=$((num + 1))
 	done
 	return 1
 }
@@ -154,13 +186,14 @@ spawn_xterm() {
 launch_xephyr() {
 	local dual="${1:-1}"
 	if [ "${dual}" = "1" ]; then
-		Xephyr "${DISPLAY}" -screen 960x720+0+0 -screen 960x720+960+0 -ac -nolisten tcp >"${LOG_DIR}/xephyr.log" 2>&1 &
+		DISPLAY="${HOST_DISPLAY}" Xephyr "${TEST_DISPLAY}" -screen 960x720+0+0 -screen 960x720+960+0 -ac -nolisten tcp >"${LOG_DIR}/xephyr.log" 2>&1 &
 	else
-		Xephyr "${DISPLAY}" -screen 1920x720 -ac -nolisten tcp >"${LOG_DIR}/xephyr.log" 2>&1 &
+		DISPLAY="${HOST_DISPLAY}" Xephyr "${TEST_DISPLAY}" -screen 1920x720 -ac -nolisten tcp >"${LOG_DIR}/xephyr.log" 2>&1 &
 	fi
 	xephyr_pid=$!
 }
 
+choose_test_display || fail "could not find a free X display starting at :${DISPLAY_NUM}"
 launch_xephyr 1
 if ! wait_for_display; then
 	if [ -n "${xephyr_pid}" ] && kill -0 "${xephyr_pid}" 2>/dev/null; then
