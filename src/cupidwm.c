@@ -11,10 +11,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/select.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <errno.h>
 
 #include <X11/keysym.h>
 #include <X11/X.h>
@@ -409,6 +412,8 @@ Client *add_client(Window w, int ws)
 	c->mon = cursor_mon;
 	c->fixed = False;
 	c->floating = False;
+	c->prev_floating = False;
+	c->floating_saved = False;
 	c->fullscreen = False;
 	c->mapped = True;
 	c->custom_stack_height = 0;
@@ -1674,8 +1679,11 @@ void hdl_motion(XEvent *xev)
 		return;
 	}
 
-	if (motion_ev->time - last_motion_time <= (1000 / (Time)user_config.motion_throttle))
-		return;
+	if (user_config.motion_throttle > 0) {
+		Time min_interval = (Time)(1000 / (unsigned int)user_config.motion_throttle);
+		if (motion_ev->time - last_motion_time <= min_interval)
+			return;
+	}
 	last_motion_time = motion_ev->time;
 
 	/* figure out which monitor the pointer is in right now */
@@ -2369,11 +2377,55 @@ void run(void)
 	running = True;
 	XEvent xev;
 	time_t last_status_tick = 0;
+	int xfd = ConnectionNumber(dpy);
 
 	while (running) {
-		while (XPending(dpy)) {
+		long timeout_ms = -1;
+		time_t now = time(NULL);
+
+		if (user_config.status_interval_sec > 0) {
+			if (last_status_tick == 0)
+				timeout_ms = 0;
+			else {
+				long due_ms = (long)user_config.status_interval_sec * 1000L -
+				              (long)(now - last_status_tick) * 1000L;
+				timeout_ms = MAX(0, due_ms);
+			}
+		}
+
+		if (user_config.focus_follows_mouse && drag_mode == DRAG_NONE && !in_ws_switch) {
+			const long focus_poll_ms = 120;
+			timeout_ms = (timeout_ms < 0) ? focus_poll_ms : MIN(timeout_ms, focus_poll_ms);
+		}
+
+		if (timeout_ms < 0) {
 			XNextEvent(dpy, &xev);
 			xev_case(&xev);
+			while (XPending(dpy)) {
+				XNextEvent(dpy, &xev);
+				xev_case(&xev);
+			}
+		}
+		else {
+			fd_set fds;
+			FD_ZERO(&fds);
+			FD_SET(xfd, &fds);
+
+			struct timeval tv;
+			tv.tv_sec = timeout_ms / 1000;
+			tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+			int selret;
+			do {
+				selret = select(xfd + 1, &fds, NULL, NULL, &tv);
+			} while (selret < 0 && errno == EINTR);
+
+			if (selret > 0 && FD_ISSET(xfd, &fds)) {
+				while (XPending(dpy)) {
+					XNextEvent(dpy, &xev);
+					xev_case(&xev);
+				}
+			}
 		}
 
 		if (user_config.focus_follows_mouse && drag_mode == DRAG_NONE && !in_ws_switch) {
@@ -2392,15 +2444,13 @@ void run(void)
 			}
 		}
 
-		time_t now = time(NULL);
+		now = time(NULL);
 		if (user_config.status_interval_sec > 0 &&
 		    (last_status_tick == 0 || now - last_status_tick >= user_config.status_interval_sec)) {
 			last_status_tick = now;
 			updatestatus();
 			drawbars();
 		}
-
-		usleep(20000);
 	}
 }
 
@@ -3210,27 +3260,34 @@ void toggle_floating(void)
 void toggle_floating_global(void)
 {
 	global_floating = !global_floating;
-	Bool any_tiled = False;
+
 	for (Client *c = workspaces[current_ws]; c; c = c->next) {
-		if (!c->floating) {
-			any_tiled = True;
-			break;
+		if (global_floating) {
+			if (!c->floating_saved) {
+				c->prev_floating = c->floating;
+				c->floating_saved = True;
+			}
+
+			c->floating = True;
+			if (!c->fullscreen) {
+				XWindowAttributes wa;
+				if (XGetWindowAttributes(dpy, c->win, &wa)) {
+					c->x = wa.x;
+					c->y = wa.y;
+					c->w = wa.width;
+					c->h = wa.height;
+
+					XConfigureWindow(dpy, c->win, CWX | CWY | CWWidth | CWHeight,
+					             &(XWindowChanges){.x = c->x, .y = c->y, .width = c->w, .height = c->h});
+				}
+				XRaiseWindow(dpy, c->win);
+			}
 		}
-	}
-
-	for (Client *c = workspaces[current_ws]; c; c = c->next) {
-		c->floating = any_tiled;
-		if (c->floating) {
-			XWindowAttributes wa;
-			XGetWindowAttributes(dpy, c->win, &wa);
-			c->x = wa.x;
-			c->y = wa.y;
-			c->w = wa.width;
-			c->h = wa.height;
-
-			XConfigureWindow(dpy, c->win, CWX | CWY | CWWidth | CWHeight,
-			                 &(XWindowChanges){.x = c->x, .y = c->y, .width = c->w, .height = c->h});
-			XRaiseWindow(dpy, c->win);
+		else if (c->floating_saved) {
+			c->floating = c->prev_floating;
+			c->floating_saved = False;
+			if (!c->floating && !c->fullscreen)
+				c->mon = get_monitor_for(c);
 		}
 	}
 
@@ -4091,19 +4148,31 @@ void window_set_ewmh_state(Window w, Atom state, Bool add)
 		found_atoms = NULL;
 		n_atoms = 0;
 	}
+	else if (found_atoms && (type != XA_ATOM || format != 32)) {
+		XFree(found_atoms);
+		found_atoms = NULL;
+		n_atoms = 0;
+	}
 
-	/* build new list */
-	Atom buf[16];
-	Atom *list = buf;
+	unsigned long capacity = n_atoms + (add ? 1UL : 0UL);
+	Atom *list = NULL;
 	unsigned long list_len = 0;
+	if (capacity > 0) {
+		list = calloc(capacity, sizeof(Atom));
+		if (!list) {
+			if (found_atoms)
+				XFree(found_atoms);
+			return;
+		}
+	}
 
 	if (found_atoms) {
 		for (unsigned long i = 0; i < n_atoms; i++) {
 			if (found_atoms[i] != state)
-				list[list_len++] = found_atoms[i];	
+				list[list_len++] = found_atoms[i];
 		}
 	}
-	if (add && list_len < 16)
+	if (add)
 		list[list_len++] = state;
 
 	if (list_len == 0)
@@ -4111,8 +4180,9 @@ void window_set_ewmh_state(Window w, Atom state, Bool add)
 	else
 		XChangeProperty(dpy, w, atoms[ATOM_NET_WM_STATE], XA_ATOM, 32, PropModeReplace, (unsigned char*)list, list_len);
 
+	free(list);
 	if (found_atoms)
-		XFree(found_atoms);	
+		XFree(found_atoms);
 }
 
 Bool window_should_float(Window w)

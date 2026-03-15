@@ -125,6 +125,8 @@ typedef struct Client {
 	int ws;
 	Bool fixed;
 	Bool floating;
+	Bool prev_floating;
+	Bool floating_saved;
 	Bool fullscreen;
 	Bool mapped;
 	pid_t pid;
