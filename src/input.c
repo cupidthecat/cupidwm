@@ -809,9 +809,13 @@ void hdl_unmap_ntf(XEvent *xev)
 {
 	if (!in_ws_switch) {
 		Window w = xev->xunmap.window;
-		for (Client *c = workspaces[current_ws]; c; c = c->next) {
-			if (c->win == w) {
+		Bool found = False;
+		for (int ws = 0; ws < NUM_WORKSPACES && !found; ws++) {
+			for (Client *c = workspaces[ws]; c; c = c->next) {
+				if (c->win != w)
+					continue;
 				c->mapped = False;
+				found = True;
 				break;
 			}
 		}

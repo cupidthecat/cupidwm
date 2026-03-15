@@ -526,6 +526,19 @@ void centre_window(void)
 	XMoveWindow(dpy, focused->win, x, y);
 }
 
+static Bool is_scratchpad_client(const Client *c)
+{
+	if (!c)
+		return False;
+
+	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
+		if (scratchpads[i].client == c)
+			return True;
+	}
+
+	return False;
+}
+
 void change_workspace(int ws)
 {
 	if (ws < 0 || ws >= NUM_WORKSPACES || ws == current_ws)
@@ -549,15 +562,7 @@ void change_workspace(int ws)
 
 	for (Client *c = workspaces[current_ws]; c; c = c->next) {
 		if (c->mapped) {
-			/* TODO: Turn into helper */
-			Bool is_scratchpad = False;
-			for (int i = 0; i < MAX_SCRATCHPADS; i++) {
-				if (scratchpads[i].client == c) {
-					is_scratchpad = True;
-					break;
-				}
-			}
-			if (!is_scratchpad)
+			if (!is_scratchpad_client(c))
 				XUnmapWindow(dpy, c->win);
 		}
 	}
@@ -566,15 +571,7 @@ void change_workspace(int ws)
 	current_ws = ws;
 	for (Client *c = workspaces[current_ws]; c; c = c->next) {
 		if (c->mapped) {
-			/* TODO: Turn into helper */
-			Bool is_scratchpad = False;
-			for (int i = 0; i < MAX_SCRATCHPADS; i++) {
-				if (scratchpads[i].client == c) {
-					is_scratchpad = True;
-					break;
-				}
-			}
-			if (!is_scratchpad)
+			if (!is_scratchpad_client(c))
 				XMapWindow(dpy, c->win);
 		}
 	}
@@ -1986,14 +1983,37 @@ void set_win_scratchpad(int n)
 		return;
 
 	Client *pad_client = focused;
-	if (scratchpads[n].client != NULL) {
-		XMapWindow(dpy, scratchpads[n].client->win);
-		scratchpads[n].enabled = False;
-		scratchpads[n].client = NULL;
+	Client *previous = scratchpads[n].client;
+
+	if (previous && previous != pad_client) {
+		XMapWindow(dpy, previous->win);
+		previous->mapped = True;
 	}
-	scratchpads[n].client = pad_client;
-	XUnmapWindow(dpy, scratchpads[n].client->win);
+
 	scratchpads[n].enabled = False;
+	scratchpads[n].client = pad_client;
+
+	XUnmapWindow(dpy, scratchpads[n].client->win);
+	scratchpads[n].client->mapped = False;
+
+	if (focused == pad_client) {
+		Client *next_focus = NULL;
+		for (Client *c = workspaces[current_ws]; c; c = c->next) {
+			if (!c->mapped || c == pad_client)
+				continue;
+			if (c->mon == current_mon) {
+				next_focus = c;
+				break;
+			}
+			if (!next_focus)
+				next_focus = c;
+		}
+		set_input_focus(next_focus, True, False);
+	}
+
+	update_net_client_list();
+	tile();
+	update_borders();
 }
 
 void reset_opacity(Window w)
