@@ -49,6 +49,7 @@ static const char *tags[NUM_WORKSPACES] = { "1", "2", "3", "4", "5", "6", "7", "
 static const Rule rules[] = {
 	/* class,      instance, title, workspace, is_floating, start_fullscreen, can_swallow, can_be_swallowed */
 	{ "pcmanfm",  NULL,     NULL,  -1,        True,        False,            False,       False },
+	{ "thunar",   NULL,     NULL,  -1,        False,       False,            False,       True  },
 	{ "obs",      NULL,     NULL,  -1,        True,        False,            False,       False },
 	{ "mpv",      NULL,     NULL,  -1,        False,       True,             False,       True  },
 	{ "vlc",      NULL,     NULL,  -1,        False,       True,             False,       True  },

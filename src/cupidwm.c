@@ -927,6 +927,102 @@ static Bool rule_matches_window(const Rule *r, const XClassHint *ch, const char 
 	return cls_match && inst_match && title_match;
 }
 
+static Bool str_contains_ci(const char *haystack, const char *needle)
+{
+	if (!haystack || !needle || !needle[0])
+		return False;
+
+	size_t nlen = strlen(needle);
+	for (const char *p = haystack; *p; p++) {
+		if (strncasecmp(p, needle, nlen) == 0)
+			return True;
+	}
+
+	return False;
+}
+
+static Bool pid_is_terminal_process(pid_t pid)
+{
+	if (pid <= 0)
+		return False;
+
+	const char *known_terms[] = {
+		"st",
+		"xterm",
+		"uxterm",
+		"rxvt",
+		"urxvt",
+		"alacritty",
+		"kitty",
+		"wezterm",
+		"ghostty",
+		"foot",
+		"footclient",
+		"gnome-terminal",
+		"gnome-terminal-server",
+		"kgx",
+		"ptyxis",
+		"konsole",
+		"xfce4-terminal",
+		"terminator",
+		"tilix",
+		"lxterminal",
+		"qterminal",
+		"mate-terminal",
+		"eterm",
+		"rio",
+		"contour",
+		"hyper",
+		"warp-terminal",
+		"tabby",
+	};
+
+	char path[PATH_MAX] = {0};
+	char comm[256] = {0};
+
+	snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+	FILE *f = fopen(path, "r");
+	if (f) {
+		if (fgets(comm, sizeof(comm), f)) {
+			size_t n = strlen(comm);
+			if (n > 0 && comm[n - 1] == '\n')
+				comm[n - 1] = '\0';
+		}
+		fclose(f);
+	}
+
+	for (size_t i = 0; i < LENGTH(known_terms); i++) {
+		if (comm[0] && strcasecmp(comm, known_terms[i]) == 0)
+			return True;
+	}
+
+	char cmdline[2048] = {0};
+	snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+	f = fopen(path, "r");
+	if (f) {
+		size_t n = fread(cmdline, 1, sizeof(cmdline) - 1, f);
+		fclose(f);
+		for (size_t i = 0; i < n; i++) {
+			if (cmdline[i] == '\0')
+				cmdline[i] = ' ';
+		}
+		cmdline[n] = '\0';
+	}
+
+	for (size_t i = 0; i < LENGTH(known_terms); i++) {
+		if (strlen(known_terms[i]) >= 4 && str_contains_ci(cmdline, known_terms[i]))
+			return True;
+	}
+
+	if ((comm[0] && str_contains_ci(comm, "term")) ||
+	    (comm[0] && str_contains_ci(comm, "tty")) ||
+	    str_contains_ci(cmdline, "term") ||
+	    str_contains_ci(cmdline, "tty"))
+		return True;
+
+	return False;
+}
+
 static const Rule *rule_for_window(Window w)
 {
 	XClassHint ch = {0};
@@ -954,10 +1050,79 @@ static const Rule *rule_for_window(Window w)
 	return ret;
 }
 
+static Bool window_is_terminal(Window w)
+{
+	XClassHint ch = {0};
+	Bool ret = False;
+	const char *known_terms[] = {
+		"st",
+		"xterm",
+		"uxterm",
+		"rxvt",
+		"urxvt",
+		"alacritty",
+		"kitty",
+		"wezterm",
+		"foot",
+		"gnome-terminal",
+		"gnome-terminal-server",
+		"konsole",
+		"xfce4-terminal",
+		"terminator",
+		"tilix",
+		"lxterminal",
+		"qterminal",
+		"mate-terminal",
+		"eterm",
+	};
+
+	if (!XGetClassHint(dpy, w, &ch))
+		return False;
+
+	Bool class_has_term = False;
+	Bool name_has_term = False;
+	Bool class_has_tty = False;
+	Bool name_has_tty = False;
+	if (ch.res_class) {
+		for (const char *p = ch.res_class; *p && !class_has_term; p++)
+			class_has_term = (strncasecmp(p, "term", 4) == 0);
+		for (const char *p = ch.res_class; *p && !class_has_tty; p++)
+			class_has_tty = (strncasecmp(p, "tty", 3) == 0);
+	}
+	if (ch.res_name) {
+		for (const char *p = ch.res_name; *p && !name_has_term; p++)
+			name_has_term = (strncasecmp(p, "term", 4) == 0);
+		for (const char *p = ch.res_name; *p && !name_has_tty; p++)
+			name_has_tty = (strncasecmp(p, "tty", 3) == 0);
+	}
+
+	for (size_t i = 0; i < LENGTH(known_terms) && !ret; i++) {
+		if (ch.res_class && strcasecmp(ch.res_class, known_terms[i]) == 0)
+			ret = True;
+		else if (ch.res_name && strcasecmp(ch.res_name, known_terms[i]) == 0)
+			ret = True;
+	}
+
+	if (!ret && (class_has_term || name_has_term || class_has_tty || name_has_tty))
+		ret = True;
+
+	if (ch.res_class)
+		XFree(ch.res_class);
+	if (ch.res_name)
+		XFree(ch.res_name);
+
+	if (!ret)
+		ret = pid_is_terminal_process(get_pid(w));
+
+	return ret;
+}
+
 static Bool window_can_swallow(Window w)
 {
 	const Rule *r = rule_for_window(w);
-	return r && r->can_swallow;
+	if (r)
+		return r->can_swallow;
+	return window_is_terminal(w);
 }
 
 static Bool window_can_be_swallowed(Window w)
@@ -1012,7 +1177,7 @@ int collect_bar_clients(int mon, Client **list, int max_clients)
 
 	int n = 0;
 	for (Client *c = workspaces[current_ws]; c && n < max_clients; c = c->next) {
-		if (c->mon != mon || c->swallower)
+		if (c->mon != mon || c->swallowed)
 			continue;
 		list[n++] = c;
 	}
@@ -1619,12 +1784,33 @@ void hdl_map_req(XEvent *xev)
 	/* check for swallowing opportunities */
 	{
 		if (window_can_be_swallowed(w)) {
+			Bool swallowed_now = False;
 			for (Client *p = workspaces[current_ws]; p; p = p->next) {
 				if (p == c || p->swallowed || !p->mapped)
 					continue;
 
 				if (window_can_swallow(p->win) && check_parent(p->pid, c->pid)) {
 					swallow_window(p, c);
+					swallowed_now = True;
+					break;
+				}
+			}
+
+			if (!swallowed_now) {
+				Client *candidates[2] = {
+					focused,
+					(current_ws >= 0 && current_ws < NUM_WORKSPACES) ? ws_focused[current_ws] : NULL,
+				};
+
+				for (size_t i = 0; i < LENGTH(candidates); i++) {
+					Client *cand = candidates[i];
+					if (!cand || cand == c || !cand->mapped || cand->swallowed || cand->ws != current_ws)
+						continue;
+					if (!window_can_swallow(cand->win))
+						continue;
+
+					swallow_window(cand, c);
+					swallowed_now = True;
 					break;
 				}
 			}
