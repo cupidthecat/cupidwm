@@ -8,7 +8,8 @@ void hdl_button(XEvent *xev)
 			continue;
 
 		unsigned int click = ClkWinTitle;
-		Arg arg = {0};
+		Arg arg;
+		memset(&arg, 0, sizeof(arg));
 		int x = 0;
 		int tw = 0;
 		int lw = 0;
@@ -399,7 +400,9 @@ void hdl_destroy_ntf(XEvent *xev)
 void hdl_keypress(XEvent *xev)
 {
 	unsigned int mods = (unsigned int)clean_mask(xev->xkey.state);
-	KeySym keysym = XLookupKeysym(&xev->xkey, 0);
+	KeySym keysym = XkbKeycodeToKeysym(dpy, (KeyCode)xev->xkey.keycode, 0, 0);
+	if (keysym == NoSymbol)
+		keysym = XLookupKeysym(&xev->xkey, 0);
 	for (size_t i = 0; i < LENGTH(keys); i++) {
 		if (keys[i].keysym != keysym)
 			continue;
@@ -807,17 +810,22 @@ void hdl_property_ntf(XEvent *xev)
 
 void hdl_unmap_ntf(XEvent *xev)
 {
-	if (!in_ws_switch) {
-		Window w = xev->xunmap.window;
-		Bool found = False;
-		for (int ws = 0; ws < NUM_WORKSPACES && !found; ws++) {
-			for (Client *c = workspaces[ws]; c; c = c->next) {
-				if (c->win != w)
-					continue;
-				c->mapped = False;
+	Window w = xev->xunmap.window;
+	Bool found = False;
+	for (int ws = 0; ws < NUM_WORKSPACES && !found; ws++) {
+		for (Client *c = workspaces[ws]; c; c = c->next) {
+			if (c->win != w)
+				continue;
+
+			if (c->ignore_unmap_events > 0) {
+				c->ignore_unmap_events--;
 				found = True;
 				break;
 			}
+
+			c->mapped = False;
+			found = True;
+			break;
 		}
 	}
 

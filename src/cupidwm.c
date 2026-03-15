@@ -26,6 +26,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xproto.h>
 #include <X11/Xutil.h>
+#include <X11/XKBlib.h>
 
 #include <fontconfig/fontconfig.h>
 #include <X11/Xft/Xft.h>
@@ -432,6 +433,7 @@ Client *add_client(Window w, int ws)
 	c->floating_saved = False;
 	c->fullscreen = False;
 	c->mapped = True;
+	c->ignore_unmap_events = 0;
 	c->custom_stack_height = 0;
 
 	if (global_floating)
@@ -555,15 +557,9 @@ void change_workspace(int ws)
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
 		if (scratchpads[i].client && scratchpads[i].enabled) {
 			visible_scratchpads[i] = True;
+			scratchpads[i].client->ignore_unmap_events += 2;
 			XUnmapWindow(dpy, scratchpads[i].client->win);
 			scratchpads[i].client->mapped = False;
-		}
-	}
-
-	for (Client *c = workspaces[current_ws]; c; c = c->next) {
-		if (c->mapped) {
-			if (!is_scratchpad_client(c))
-				XUnmapWindow(dpy, c->win);
 		}
 	}
 
@@ -1452,13 +1448,39 @@ void move_prev_mon(void)
 
 void move_to_workspace(int ws)
 {
-	if (!focused || ws < 0 || ws >= NUM_WORKSPACES || ws == current_ws)
+	if (ws < 0 || ws >= NUM_WORKSPACES || ws == current_ws)
 		return;
 
 	Client *moved = focused;
+	if (!moved || moved->ws != current_ws || !moved->mapped) {
+		Client *candidate = ws_focused[current_ws];
+		if (candidate && candidate->ws == current_ws && candidate->mapped)
+			moved = candidate;
+		else
+			moved = NULL;
+
+		if (!moved) {
+			for (Client *c = workspaces[current_ws]; c; c = c->next) {
+				if (!c->mapped)
+					continue;
+				if (c->mon == current_mon) {
+					moved = c;
+					break;
+				}
+				if (!moved)
+					moved = c;
+			}
+		}
+	}
+
+	if (!moved)
+		return;
+
 	int from_ws = current_ws;
 
+	moved->ignore_unmap_events += 2;
 	XUnmapWindow(dpy, moved->win);
+	moved->mapped = True;
 
 	/* remove from current list */
 	Client **pp = &workspaces[from_ws];

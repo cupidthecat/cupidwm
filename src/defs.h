@@ -129,6 +129,7 @@ typedef struct Client {
 	Bool floating_saved;
 	Bool fullscreen;
 	Bool mapped;
+	int ignore_unmap_events;
 	pid_t pid;
 	struct Client *next;
 	struct Client *swallowed;
