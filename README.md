@@ -35,7 +35,7 @@ You need an X11 stack plus build dependencies.
 Required:
 - Xorg server + `xinit`
 - C compiler + `make`
-- `libX11`, `libXinerama`, `libXcursor` development headers
+- `libX11`, `libXinerama`, `libXcursor`, `libXft`, `fontconfig`, `freetype` development headers
 
 Optional but recommended (default keybind commands use these):
 - terminal (`st`)
@@ -43,9 +43,12 @@ Optional but recommended (default keybind commands use these):
 - browser (`firefox`)
 
 Examples:
-- Debian/Ubuntu: install `xorg`, `xinit`, `build-essential`, `libx11-dev`, `libxinerama-dev`, `libxcursor-dev`
-- Arch: install `xorg-server`, `xorg-xinit`, `base-devel`, `libx11`, `libxinerama`, `libxcursor`
-- Fedora: install `xorg-x11-server-Xorg`, `xorg-x11-xinit`, `gcc`, `make`, `libX11-devel`, `libXinerama-devel`, `libXcursor-devel`
+- Debian/Ubuntu: install `xorg`, `xinit`, `build-essential`, `libx11-dev`, `libxinerama-dev`, `libxcursor-dev`, `libxft-dev`, `libfontconfig-dev`, `libfreetype6-dev`
+- Arch: install `xorg-server`, `xorg-xinit`, `base-devel`, `libx11`, `libxinerama`, `libxcursor`, `libxft`, `fontconfig`, `freetype2`
+- Fedora: install `xorg-x11-server-Xorg`, `xorg-x11-xinit`, `gcc`, `make`, `libX11-devel`, `libXinerama-devel`, `libXcursor-devel`, `libXft-devel`, `fontconfig-devel`, `freetype-devel`
+
+Font note:
+- Default bar font is `undefined-medium`. Install `undefined-medium.ttf` into your font path (then run `fc-cache -f`) or set `fontname` in `config.h` to another installed font.
 
 Build and Install
 -----------------
@@ -56,11 +59,82 @@ make
 sudo make install
 ```
 
+For a fully clean rebuild:
+
+```sh
+make clean
+make
+```
+
+Optional font install target:
+
+```sh
+sudo make install-font
+```
+
 To run without installing:
 
 ```sh
 ./cupidwm
 ```
+
+Testing
+-------
+
+`cupidwm` ships a Xephyr smoke test that exercises workspace switching, move-to-workspace, scratchpads, swallowing, and monitor focus/move flows.
+
+Smoke test dependencies:
+- `Xephyr`
+- `xdpyinfo`
+- `xprop`
+- `xdotool`
+- `xterm`
+- `xwininfo`
+- `awk`, `sed`, `grep`
+
+Run tests:
+
+```sh
+cd /home/frank/cupidwm/cupidwm
+make
+make test-smoke
+```
+
+Equivalent direct invocation:
+
+```sh
+./scripts/smoke-xephyr.sh ./cupidwm
+```
+
+Optional:
+- Set `DISPLAY_NUM` to avoid conflicts, for example: `DISPLAY_NUM=100 make test-smoke`
+
+Important Hardening Notes (2026-03-15)
+--------------------------------------
+
+- `make install` manpage version replacement now uses `${VERSION}` from `config.mk` to avoid version drift.
+- Build config now prefers `pkg-config` (`x11`, `xinerama`, `xcursor`, `xft`, `fontconfig`) and falls back to legacy `/usr/X11R6` paths when unavailable.
+- Workspace switching now rejects invalid negative indices from external EWMH requests.
+- Root `_NET_CURRENT_DESKTOP` and client `_NET_WM_*` property handling now validates type/format before use.
+- `_NET_CLIENT_LIST` export now has an explicit `MAX_CLIENTS` guard to avoid writing beyond fixed buffers.
+- Battery status fallback now auto-detects a battery under `/sys/class/power_supply` when configured `status_battery_path` is missing/unavailable.
+- Monitor discovery now clamps to `MAX_MONITORS` and falls back safely if Xinerama reports invalid/empty monitor data.
+- Client monitor assignments are re-clamped after monitor topology refresh to avoid stale/out-of-range monitor indices.
+- `_NET_WORKAREA` export length now matches bounded monitor data to avoid out-of-bounds reads.
+- Scratchpad assignment and per-monitor master-width controls now clamp unsafe indices.
+- Source layout was refactored: `src/cupidwm.c` now includes focused modules (`src/input.c`, `src/layout.c`, `src/ewmh.c`, `src/status.c`, `src/bar.c`) to reduce monolith risk while preserving single-translation-unit behavior.
+- Added CI (`.github/workflows/ci.yml`) with:
+  - matrix builds (`gcc` + `clang`)
+  - distro/container build coverage (`debian`, `fedora`, `arch`)
+  - sanitizer builds (`ASan` + `UBSan`) with `-Werror`
+  - static analysis (`cppcheck` + `clang-tidy` clang-analyzer checks)
+  - expanded Xephyr smoke test (`scripts/smoke-xephyr.sh`) covering:
+    - workspace switching
+    - move-to-workspace
+    - scratchpad create/toggle
+    - swallowing behavior
+    - monitor focus/move (with multi-monitor Xephyr fallback handling)
+- Added `cupidwm.desktop` and install/uninstall handling so display managers can launch `cupidwm` from X sessions.
 
 Start CupidWM With startx
 -------------------------
@@ -185,7 +259,16 @@ Mouse focus behavior is configurable too:
 Project Layout
 --------------
 
-- `src/`: core source (`cupidwm.c`) and internal headers (`defs.h`)
+- `src/`: core source split by concern:
+  - `cupidwm.c` (core runtime + shared state)
+  - `input.c` (X event handlers)
+  - `layout.c` (tiling/layout transitions)
+  - `ewmh.c` (EWMH atoms/properties)
+  - `status.c` (status generation/text metrics)
+  - `bar.c` (bar setup/render/click mapping)
+  - `defs.h` (shared structs/macros)
+- `scripts/`: helper scripts (including Xephyr smoke test)
+- `.github/workflows/`: CI definitions
 - `config.def.h`: default source configuration template
 - `config.h`: active local configuration
 - `cupidwm.1`: man page source
