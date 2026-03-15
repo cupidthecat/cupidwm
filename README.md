@@ -16,16 +16,18 @@ Shown above is `cupidwm` running on Arch Linux on X11, with Visual Studio Code o
 Features
 --------
 
-- 9 fixed workspaces (`1`-`9`)
+- Source-configured and source-built workflow (dwm-style, no binary package requirement)
+- 9 fixed workspaces (`1`-`9`) with move-to-workspace support
 - Tile / monocle / floating / fibonacci / dwindle layouts
+- Per-workspace client stacks with master/stack resizing controls
 - Scratchpads (create/toggle/remove)
-- Swallowing rules
-- Multi-monitor support (Xinerama)
-- EWMH basics (`_NET_CURRENT_DESKTOP`, `_NET_ACTIVE_WINDOW`, `_NET_WORKAREA`, etc.)
-- Built-in Xlib bar (tags, layout symbol, clickable tabs, root-name or fallback status)
-- Autostart command list from source
-- Tab hide/restore on click (click focused tab to hide, click tab again to restore)
-- Swallowed app tabs show the app title (e.g. terminal -> thunar shows a thunar tab)
+- Swallowing rules with tab/title behavior preserved for swallowed apps
+- Multi-monitor support (Xinerama) with monitor focus/move actions
+- EWMH support (`_NET_CURRENT_DESKTOP`, `_NET_ACTIVE_WINDOW`, `_NET_CLIENT_LIST`, `_NET_WORKAREA`, `_NET_WM_DESKTOP`, `_NET_WM_STATE`)
+- Built-in Xlib bar (tags, layout symbol, clickable tabs, title fallback)
+- Status text from root name or built-in fallback (disk/cpu/ram/battery/time, configurable order/labels)
+- Autostart command list from source config
+- Xephyr smoke test flow for workspace, move-to-workspace, scratchpad, swallowing, and monitor behavior
 
 Basic X11 Setup
 ---------------
@@ -46,6 +48,29 @@ Examples:
 - Debian/Ubuntu: install `xorg`, `xinit`, `build-essential`, `libx11-dev`, `libxinerama-dev`, `libxcursor-dev`, `libxft-dev`, `libfontconfig-dev`, `libfreetype6-dev`
 - Arch: install `xorg-server`, `xorg-xinit`, `base-devel`, `libx11`, `libxinerama`, `libxcursor`, `libxft`, `fontconfig`, `freetype2`
 - Fedora: install `xorg-x11-server-Xorg`, `xorg-x11-xinit`, `gcc`, `make`, `libX11-devel`, `libXinerama-devel`, `libXcursor-devel`, `libXft-devel`, `fontconfig-devel`, `freetype-devel`
+
+Automatic dependency installer (`scripts/install-deps.sh`):
+
+- Supports Arch, Debian/Ubuntu, and Fedora families via distro detection from `/etc/os-release`.
+- Installs build/runtime dependencies plus smoke-test dependencies by default.
+
+```sh
+./scripts/install-deps.sh --yes
+```
+
+Useful options:
+
+- `--build-only`: skip smoke-test tools and install only build/runtime dependencies
+- `--yes`: non-interactive install
+- `--dry-run`: print package-manager commands without executing
+- `--help`: show all options
+
+Examples:
+
+```sh
+./scripts/install-deps.sh --build-only --yes
+./scripts/install-deps.sh --dry-run
+```
 
 Font note:
 - Default bar font is `undefined-medium`. Install `undefined-medium.ttf` into your font path (then run `fc-cache -f`) or set `fontname` in `config.h` to another installed font.
@@ -91,6 +116,9 @@ Smoke test dependencies:
 - `xterm`
 - `xwininfo`
 - `awk`, `sed`, `grep`
+
+Note:
+- Running `./scripts/install-deps.sh --yes` installs these smoke-test dependencies too.
 
 Run tests:
 
