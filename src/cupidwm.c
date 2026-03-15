@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include <errno.h>
+#include <dirent.h>
 
 #include <X11/keysym.h>
 #include <X11/X.h>
@@ -941,41 +942,109 @@ static Bool str_contains_ci(const char *haystack, const char *needle)
 	return False;
 }
 
+static Bool class_hint_looks_terminal(const char *s)
+{
+	if (!s || !s[0])
+		return False;
+
+	return str_contains_ci(s, "terminal") ||
+	       str_contains_ci(s, "term") ||
+	       str_contains_ci(s, "tty") ||
+	       str_contains_ci(s, "console") ||
+	       str_contains_ci(s, "vt");
+}
+
+static Bool fd_path_is_pty(const char *link)
+{
+	if (!link || !link[0])
+		return False;
+
+	return strncmp(link, "/dev/pts/", 9) == 0 ||
+	       strncmp(link, "/dev/tty", 8) == 0 ||
+	       strcmp(link, "/dev/ptmx") == 0;
+}
+
+static Bool process_has_pty_fd(pid_t pid)
+{
+	if (pid <= 0)
+		return False;
+
+	char path[PATH_MAX] = {0};
+	snprintf(path, sizeof(path), "/proc/%d/fd", pid);
+
+	DIR *dir = opendir(path);
+	if (!dir)
+		return False;
+
+	Bool has_pty = False;
+	struct dirent *ent;
+	while ((ent = readdir(dir)) != NULL) {
+		if (ent->d_name[0] == '.')
+			continue;
+
+		char fdpath[PATH_MAX] = {0};
+		char link[PATH_MAX] = {0};
+		snprintf(fdpath, sizeof(fdpath), "%s/%s", path, ent->d_name);
+		ssize_t n = readlink(fdpath, link, sizeof(link) - 1);
+		if (n <= 0)
+			continue;
+
+		link[n] = '\0';
+		if (fd_path_is_pty(link)) {
+			has_pty = True;
+			break;
+		}
+	}
+
+	closedir(dir);
+	return has_pty;
+}
+
+static Bool process_tree_has_pty(pid_t root_pid)
+{
+	if (root_pid <= 0)
+		return False;
+
+	DIR *proc = opendir("/proc");
+	if (!proc)
+		return False;
+
+	Bool has_pty = False;
+	struct dirent *ent;
+	while ((ent = readdir(proc)) != NULL) {
+		if (ent->d_name[0] < '0' || ent->d_name[0] > '9')
+			continue;
+
+		char *end = NULL;
+		long v = strtol(ent->d_name, &end, 10);
+		if (!end || *end != '\0')
+			continue;
+		if (v <= 0)
+			continue;
+
+		pid_t pid = (pid_t)v;
+		if (pid == root_pid)
+			continue;
+		if (!is_child_proc(root_pid, pid))
+			continue;
+		if (!process_has_pty_fd(pid))
+			continue;
+
+		has_pty = True;
+		break;
+	}
+
+	closedir(proc);
+	return has_pty;
+}
+
 static Bool pid_is_terminal_process(pid_t pid)
 {
 	if (pid <= 0)
 		return False;
 
-	const char *known_terms[] = {
-		"st",
-		"xterm",
-		"uxterm",
-		"rxvt",
-		"urxvt",
-		"alacritty",
-		"kitty",
-		"wezterm",
-		"ghostty",
-		"foot",
-		"footclient",
-		"gnome-terminal",
-		"gnome-terminal-server",
-		"kgx",
-		"ptyxis",
-		"konsole",
-		"xfce4-terminal",
-		"terminator",
-		"tilix",
-		"lxterminal",
-		"qterminal",
-		"mate-terminal",
-		"eterm",
-		"rio",
-		"contour",
-		"hyper",
-		"warp-terminal",
-		"tabby",
-	};
+	if (process_has_pty_fd(pid) || process_tree_has_pty(pid))
+		return True;
 
 	char path[PATH_MAX] = {0};
 	char comm[256] = {0};
@@ -991,33 +1060,7 @@ static Bool pid_is_terminal_process(pid_t pid)
 		fclose(f);
 	}
 
-	for (size_t i = 0; i < LENGTH(known_terms); i++) {
-		if (comm[0] && strcasecmp(comm, known_terms[i]) == 0)
-			return True;
-	}
-
-	char cmdline[2048] = {0};
-	snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
-	f = fopen(path, "r");
-	if (f) {
-		size_t n = fread(cmdline, 1, sizeof(cmdline) - 1, f);
-		fclose(f);
-		for (size_t i = 0; i < n; i++) {
-			if (cmdline[i] == '\0')
-				cmdline[i] = ' ';
-		}
-		cmdline[n] = '\0';
-	}
-
-	for (size_t i = 0; i < LENGTH(known_terms); i++) {
-		if (strlen(known_terms[i]) >= 4 && str_contains_ci(cmdline, known_terms[i]))
-			return True;
-	}
-
-	if ((comm[0] && str_contains_ci(comm, "term")) ||
-	    (comm[0] && str_contains_ci(comm, "tty")) ||
-	    str_contains_ci(cmdline, "term") ||
-	    str_contains_ci(cmdline, "tty"))
+	if (class_hint_looks_terminal(comm))
 		return True;
 
 	return False;
@@ -1054,56 +1097,11 @@ static Bool window_is_terminal(Window w)
 {
 	XClassHint ch = {0};
 	Bool ret = False;
-	const char *known_terms[] = {
-		"st",
-		"xterm",
-		"uxterm",
-		"rxvt",
-		"urxvt",
-		"alacritty",
-		"kitty",
-		"wezterm",
-		"foot",
-		"gnome-terminal",
-		"gnome-terminal-server",
-		"konsole",
-		"xfce4-terminal",
-		"terminator",
-		"tilix",
-		"lxterminal",
-		"qterminal",
-		"mate-terminal",
-		"eterm",
-	};
 
 	if (!XGetClassHint(dpy, w, &ch))
 		return False;
 
-	Bool class_has_term = False;
-	Bool name_has_term = False;
-	Bool class_has_tty = False;
-	Bool name_has_tty = False;
-	if (ch.res_class) {
-		for (const char *p = ch.res_class; *p && !class_has_term; p++)
-			class_has_term = (strncasecmp(p, "term", 4) == 0);
-		for (const char *p = ch.res_class; *p && !class_has_tty; p++)
-			class_has_tty = (strncasecmp(p, "tty", 3) == 0);
-	}
-	if (ch.res_name) {
-		for (const char *p = ch.res_name; *p && !name_has_term; p++)
-			name_has_term = (strncasecmp(p, "term", 4) == 0);
-		for (const char *p = ch.res_name; *p && !name_has_tty; p++)
-			name_has_tty = (strncasecmp(p, "tty", 3) == 0);
-	}
-
-	for (size_t i = 0; i < LENGTH(known_terms) && !ret; i++) {
-		if (ch.res_class && strcasecmp(ch.res_class, known_terms[i]) == 0)
-			ret = True;
-		else if (ch.res_name && strcasecmp(ch.res_name, known_terms[i]) == 0)
-			ret = True;
-	}
-
-	if (!ret && (class_has_term || name_has_term || class_has_tty || name_has_tty))
+	if (class_hint_looks_terminal(ch.res_class) || class_hint_looks_terminal(ch.res_name))
 		ret = True;
 
 	if (ch.res_class)
@@ -2065,7 +2063,20 @@ void init_defaults(void)
 	user_config.status_enable_fallback = status_enable_fallback ? True : False;
 	user_config.status_show_disk = status_show_disk ? True : False;
 	user_config.status_show_disk_total = status_show_disk_total ? True : False;
+	user_config.status_show_cpu = status_show_cpu ? True : False;
+	user_config.status_show_ram = status_show_ram ? True : False;
+	user_config.status_show_battery = status_show_battery ? True : False;
+	user_config.status_show_time = status_show_time ? True : False;
+	user_config.status_ram_show_percent = status_ram_show_percent ? True : False;
+	user_config.status_battery_show_state = status_battery_show_state ? True : False;
 	user_config.status_disk_path = status_disk_path;
+	user_config.status_battery_path = status_battery_path;
+	user_config.status_disk_label = status_disk_label;
+	user_config.status_cpu_label = status_cpu_label;
+	user_config.status_ram_label = status_ram_label;
+	user_config.status_battery_label = status_battery_label;
+	user_config.status_time_label = status_time_label;
+	user_config.status_section_order = status_section_order;
 	user_config.status_time_format = status_time_format;
 	user_config.status_separator = status_separator;
 
@@ -3935,6 +3946,201 @@ static Bool xft_draw_text(XftDraw *draw, unsigned long color, int x, int y, cons
 	return True;
 }
 
+static void status_append_segment(char *dest, size_t destsz, const char *sep, const char *segment)
+{
+	if (!dest || destsz == 0 || !segment || !segment[0])
+		return;
+
+	size_t used = strlen(dest);
+	if (used >= destsz - 1)
+		return;
+
+	if (used > 0 && sep && sep[0]) {
+		size_t rem = destsz - used - 1;
+		size_t seplen = strlen(sep);
+		if (seplen > rem)
+			seplen = rem;
+		memcpy(dest + used, sep, seplen);
+		used += seplen;
+		dest[used] = '\0';
+	}
+
+	if (used < destsz - 1) {
+		size_t rem = destsz - used - 1;
+		size_t seglen = strlen(segment);
+		if (seglen > rem)
+			seglen = rem;
+		memcpy(dest + used, segment, seglen);
+		used += seglen;
+		dest[used] = '\0';
+	}
+}
+
+static Bool read_cpu_percent(double *usage_out)
+{
+	static unsigned long long prev_total = 0;
+	static unsigned long long prev_idle = 0;
+
+	if (!usage_out)
+		return False;
+
+	FILE *f = fopen("/proc/stat", "r");
+	if (!f)
+		return False;
+
+	char line[512];
+	if (!fgets(line, sizeof(line), f)) {
+		fclose(f);
+		return False;
+	}
+	fclose(f);
+
+	unsigned long long user = 0, nice = 0, system = 0, idle = 0;
+	unsigned long long iowait = 0, irq = 0, softirq = 0, steal = 0;
+	int n = sscanf(line, "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+		       &user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal);
+	if (n < 4)
+		return False;
+
+	unsigned long long idle_all = idle + iowait;
+	unsigned long long non_idle = user + nice + system + irq + softirq + steal;
+	unsigned long long total = idle_all + non_idle;
+
+	if (prev_total == 0 || total < prev_total || idle_all < prev_idle) {
+		prev_total = total;
+		prev_idle = idle_all;
+		return False;
+	}
+
+	unsigned long long dtotal = total - prev_total;
+	unsigned long long didle = idle_all - prev_idle;
+
+	prev_total = total;
+	prev_idle = idle_all;
+
+	if (dtotal == 0)
+		return False;
+
+	*usage_out = 100.0 * (double)(dtotal - didle) / (double)dtotal;
+	if (*usage_out < 0.0)
+		*usage_out = 0.0;
+	if (*usage_out > 100.0)
+		*usage_out = 100.0;
+	return True;
+}
+
+static Bool read_ram_info(unsigned long long *used_mb, unsigned long long *total_mb, double *used_percent)
+{
+	if (!used_mb || !total_mb || !used_percent)
+		return False;
+
+	FILE *f = fopen("/proc/meminfo", "r");
+	if (!f)
+		return False;
+
+	unsigned long long mem_total_kb = 0;
+	unsigned long long mem_avail_kb = 0;
+	char key[64];
+	unsigned long long val = 0;
+	char unit[32];
+
+	while (fscanf(f, "%63[^:]: %llu %31s\n", key, &val, unit) == 3) {
+		if (strcmp(key, "MemTotal") == 0)
+			mem_total_kb = val;
+		else if (strcmp(key, "MemAvailable") == 0)
+			mem_avail_kb = val;
+
+		if (mem_total_kb > 0 && mem_avail_kb > 0)
+			break;
+	}
+	fclose(f);
+
+	if (mem_total_kb == 0 || mem_avail_kb > mem_total_kb)
+		return False;
+
+	unsigned long long used_kb = mem_total_kb - mem_avail_kb;
+	*used_mb = used_kb / 1024ULL;
+	*total_mb = mem_total_kb / 1024ULL;
+	*used_percent = (double)used_kb * 100.0 / (double)mem_total_kb;
+	if (*used_percent < 0.0)
+		*used_percent = 0.0;
+	if (*used_percent > 100.0)
+		*used_percent = 100.0;
+	return True;
+}
+
+static Bool read_battery_info(const char *base_path, int *capacity_out, char *status_out, size_t status_out_len)
+{
+	if (!base_path || !base_path[0] || !capacity_out)
+		return False;
+
+	char path[PATH_MAX];
+	FILE *f;
+	int cap = -1;
+
+	snprintf(path, sizeof(path), "%s/capacity", base_path);
+	f = fopen(path, "r");
+	if (!f)
+		return False;
+	if (fscanf(f, "%d", &cap) != 1) {
+		fclose(f);
+		return False;
+	}
+	fclose(f);
+
+	if (cap < 0)
+		return False;
+	if (cap > 100)
+		cap = 100;
+
+	*capacity_out = cap;
+
+	if (status_out && status_out_len > 0) {
+		status_out[0] = '\0';
+		snprintf(path, sizeof(path), "%s/status", base_path);
+		f = fopen(path, "r");
+		if (f) {
+			if (fgets(status_out, (int)status_out_len, f)) {
+				size_t n = strlen(status_out);
+				while (n > 0 && (status_out[n - 1] == '\n' || status_out[n - 1] == '\r')) {
+					status_out[n - 1] = '\0';
+					n--;
+				}
+			}
+			fclose(f);
+		}
+	}
+
+	return True;
+}
+
+static Bool status_append_named_segment(char *dest, size_t destsz, const char *sep,
+					       const char *name,
+					       const char *diskbuf,
+					       const char *cpubuf,
+					       const char *rambuf,
+					       const char *batbuf,
+					       const char *timebuf)
+{
+	if (!name || !name[0])
+		return False;
+
+	if (strcasecmp(name, "disk") == 0)
+		status_append_segment(dest, destsz, sep, diskbuf);
+	else if (strcasecmp(name, "cpu") == 0)
+		status_append_segment(dest, destsz, sep, cpubuf);
+	else if (strcasecmp(name, "ram") == 0 || strcasecmp(name, "memory") == 0 || strcasecmp(name, "mem") == 0)
+		status_append_segment(dest, destsz, sep, rambuf);
+	else if (strcasecmp(name, "battery") == 0 || strcasecmp(name, "bat") == 0)
+		status_append_segment(dest, destsz, sep, batbuf);
+	else if (strcasecmp(name, "time") == 0 || strcasecmp(name, "date") == 0 || strcasecmp(name, "clock") == 0)
+		status_append_segment(dest, destsz, sep, timebuf);
+	else
+		return False;
+
+	return True;
+}
+
 void updatestatus(void)
 {
 	char *name = NULL;
@@ -3951,7 +4157,11 @@ void updatestatus(void)
 		unsigned long long avail_gb = 0;
 		unsigned long long total_gb = 0;
 		char diskbuf[96] = "";
+		char cpubuf[64] = "";
+		char rambuf[64] = "";
+		char batbuf[96] = "";
 		char timebuf[96] = "";
+		const char *sep = user_config.status_separator ? user_config.status_separator : " ";
 
 		const char *mount = user_config.status_disk_path ? user_config.status_disk_path : "/";
 		if (user_config.status_show_disk && statvfs(mount, &vfs) == 0) {
@@ -3959,29 +4169,103 @@ void updatestatus(void)
 			unsigned long long total = (unsigned long long)vfs.f_blocks * (unsigned long long)vfs.f_frsize;
 			avail_gb = avail / (1024ULL * 1024ULL * 1024ULL);
 			total_gb = total / (1024ULL * 1024ULL * 1024ULL);
+			const char *disk_label = user_config.status_disk_label ? user_config.status_disk_label : "";
+			const char *disk_name = disk_label[0] ? disk_label : mount;
 
 			if (user_config.status_show_disk_total && total_gb > 0)
-				snprintf(diskbuf, sizeof(diskbuf), "%s %llu/%lluG", mount, avail_gb, total_gb);
+				snprintf(diskbuf, sizeof(diskbuf), "%s %llu/%lluG", disk_name, avail_gb, total_gb);
 			else
-				snprintf(diskbuf, sizeof(diskbuf), "%s %lluG", mount, avail_gb);
+				snprintf(diskbuf, sizeof(diskbuf), "%s %lluG", disk_name, avail_gb);
+		}
+
+		if (user_config.status_show_cpu) {
+			double cpu_percent = 0.0;
+			if (read_cpu_percent(&cpu_percent)) {
+				const char *cpu_label = user_config.status_cpu_label ? user_config.status_cpu_label : "CPU";
+				snprintf(cpubuf, sizeof(cpubuf), "%s %.0f%%", cpu_label, cpu_percent);
+			}
+		}
+
+		if (user_config.status_show_ram) {
+			unsigned long long used_mb = 0;
+			unsigned long long total_mb = 0;
+			double used_percent = 0.0;
+			if (read_ram_info(&used_mb, &total_mb, &used_percent)) {
+				const char *ram_label = user_config.status_ram_label ? user_config.status_ram_label : "RAM";
+				if (user_config.status_ram_show_percent || total_mb == 0)
+					snprintf(rambuf, sizeof(rambuf), "%s %.0f%%", ram_label, used_percent);
+				else
+					snprintf(rambuf, sizeof(rambuf), "%s %.1f/%.1fG", ram_label,
+					         (double)used_mb / 1024.0, (double)total_mb / 1024.0);
+			}
+		}
+
+		if (user_config.status_show_battery) {
+			int capacity = 0;
+			char battery_state[32] = "";
+			const char *battery_path = user_config.status_battery_path ? user_config.status_battery_path : "/sys/class/power_supply/BAT0";
+			if (read_battery_info(battery_path, &capacity, battery_state, sizeof(battery_state))) {
+				const char *bat_label = user_config.status_battery_label ? user_config.status_battery_label : "BAT";
+				if (user_config.status_battery_show_state && battery_state[0])
+					snprintf(batbuf, sizeof(batbuf), "%s %d%% %s", bat_label, capacity, battery_state);
+				else
+					snprintf(batbuf, sizeof(batbuf), "%s %d%%", bat_label, capacity);
+			}
 		}
 
 		time_t now = time(NULL);
 		struct tm tm_now;
-		if (localtime_r(&now, &tm_now) && user_config.status_time_format && user_config.status_time_format[0])
-			strftime(timebuf, sizeof(timebuf), user_config.status_time_format, &tm_now);
+		if (user_config.status_show_time &&
+		    localtime_r(&now, &tm_now) &&
+		    user_config.status_time_format &&
+		    user_config.status_time_format[0]) {
+			char tval[64] = "";
+			strftime(tval, sizeof(tval), user_config.status_time_format, &tm_now);
+			if (tval[0]) {
+				const char *time_label = user_config.status_time_label ? user_config.status_time_label : "";
+				if (time_label[0])
+					snprintf(timebuf, sizeof(timebuf), "%s %s", time_label, tval);
+				else
+					strncpy(timebuf, tval, sizeof(timebuf) - 1);
+				timebuf[sizeof(timebuf) - 1] = '\0';
+			}
+		}
 
-		if (diskbuf[0] && timebuf[0]) {
-			const char *sep = user_config.status_separator ? user_config.status_separator : " ";
-			snprintf(stext, sizeof(stext), "%s%s%s", diskbuf, sep, timebuf);
+		const char *order = user_config.status_section_order;
+		if (order && order[0]) {
+			char token[32];
+			size_t tlen = 0;
+
+			for (const char *p = order;; p++) {
+				char ch = *p;
+				Bool end = (ch == '\0');
+				Bool sepch = (ch == ',' || ch == ';' || ch == '|' || ch == '/' || ch == ':' ||
+				              ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r');
+
+				if (!end && !sepch) {
+					if (tlen < sizeof(token) - 1)
+						token[tlen++] = ch;
+				}
+
+				if (end || sepch) {
+					if (tlen > 0) {
+						token[tlen] = '\0';
+						status_append_named_segment(stext, sizeof(stext), sep, token,
+						                           diskbuf, cpubuf, rambuf, batbuf, timebuf);
+						tlen = 0;
+					}
+					if (end)
+						break;
+				}
+			}
 		}
-		else if (diskbuf[0]) {
-			strncpy(stext, diskbuf, sizeof(stext) - 1);
-			stext[sizeof(stext) - 1] = '\0';
-		}
-		else if (timebuf[0]) {
-			strncpy(stext, timebuf, sizeof(stext) - 1);
-			stext[sizeof(stext) - 1] = '\0';
+
+		if (stext[0] == '\0') {
+			status_append_segment(stext, sizeof(stext), sep, diskbuf);
+			status_append_segment(stext, sizeof(stext), sep, cpubuf);
+			status_append_segment(stext, sizeof(stext), sep, rambuf);
+			status_append_segment(stext, sizeof(stext), sep, batbuf);
+			status_append_segment(stext, sizeof(stext), sep, timebuf);
 		}
 	}
 }

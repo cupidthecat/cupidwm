@@ -16,6 +16,8 @@ Features
 - EWMH basics (`_NET_CURRENT_DESKTOP`, `_NET_ACTIVE_WINDOW`, `_NET_WORKAREA`, etc.)
 - Built-in Xlib bar (tags, layout symbol, clickable tabs, root-name or fallback status)
 - Autostart command list from source
+- Tab hide/restore on click (click focused tab to hide, click tab again to restore)
+- Swallowed app tabs show the app title (e.g. terminal -> thunar shows a thunar tab)
 
 Basic X11 Setup
 ---------------
@@ -142,14 +144,31 @@ The bar behavior is fully configurable in `config.h`:
 - `bar_click_focus_tabs` to focus windows by clicking tabs
 - `bar_show_title_fallback` to show a single title when tabs are disabled/empty
 
+Tab interaction behavior:
+
+- Left-clicking a non-focused tab focuses that window.
+- Left-clicking the focused tab hides (unmaps) that window.
+- Hidden windows stay listed in tabs so they can be clicked again to restore.
+- When a terminal swallows an app window, the visible app still appears as a normal tab title.
+
 Built-in status behavior is also configurable:
 
 - `status_interval_sec` update cadence (`0` disables periodic refresh)
 - `status_use_root_name` to use `xsetroot -name` text when present
 - `status_enable_fallback` to use built-in status when root name is empty
-- `status_show_disk`, `status_show_disk_total`, `status_disk_path`
-- `status_time_format` (strftime format)
-- `status_separator` between disk and time sections
+- `status_show_disk`, `status_show_disk_total`, `status_disk_path`, `status_disk_label`
+- `status_show_cpu`, `status_cpu_label`
+- `status_show_ram`, `status_ram_label`, `status_ram_show_percent`
+- `status_show_battery`, `status_battery_path`, `status_battery_label`, `status_battery_show_state`
+- `status_show_time`, `status_time_label`, `status_time_format` (strftime format)
+- `status_section_order` to control fallback section order (tokens: `disk`, `cpu`, `ram`, `battery`, `time`)
+- `status_separator` between fallback status sections
+
+`status_section_order` accepts comma/space separated tokens, for example:
+
+- `"battery,time,cpu,ram,disk"`
+
+Disabled/unavailable sections are automatically omitted.
 
 Mouse focus behavior is configurable too:
 
