@@ -25,7 +25,7 @@ clean:
 
 dist: clean
 	mkdir -p cupidwm-${VERSION}
-	cp -R LICENSE Makefile README config.def.h config.mk cupidwm.1 src cupidwm-${VERSION}
+	cp -R LICENSE Makefile README.md config.def.h config.mk cupidwm.1 src cupidwm-${VERSION}
 	tar -cf cupidwm-${VERSION}.tar cupidwm-${VERSION}
 	gzip cupidwm-${VERSION}.tar
 	rm -rf cupidwm-${VERSION}
