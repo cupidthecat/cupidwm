@@ -6,7 +6,19 @@ static const unsigned int snap = 5;
 static const int showbar = 1;
 static const int topbar = 1;
 static const int barheight = 20;
-static const char fontname[] = "fixed";
+static const char fontname[] = "undefined-medium";
+static const int bar_show_tabs = 1;
+static const int bar_click_focus_tabs = 1;
+static const int bar_show_title_fallback = 1;
+
+static const int status_interval_sec = 1;
+static const int status_use_root_name = 1;
+static const int status_enable_fallback = 1;
+static const int status_show_disk = 1;
+static const int status_show_disk_total = 1;
+static const char status_disk_path[] = "/";
+static const char status_time_format[] = "%Y-%m-%d %H:%M";
+static const char status_separator[] = " | ";
 
 static const char col_border_focused[] = "#000000";
 static const char col_border_unfocused[] = "#444444";
@@ -23,6 +35,7 @@ static const int resize_stack_amount = 20;
 static const int move_window_amount = 50;
 static const int resize_window_amount = 50;
 static const int new_window_focus = 1;
+static const int focus_follows_mouse = 1;
 static const int warp_cursor_on = 1;
 static const int floating_on_top = 1;
 static const int new_window_master = 0;
@@ -45,9 +58,9 @@ static const Rule rules[] = {
 /* layouts */
 static const Layout layouts[] = {
 	/* symbol, mode */
+	{ "[M]", LayoutMonocle },
 	{ "[]=", LayoutTile },
 	{ "><>", LayoutFloating },
-	{ "[M]", LayoutMonocle },
 	{ "[@]", LayoutFibonacci },
 	{ "[\\]", LayoutDwindle },
 };

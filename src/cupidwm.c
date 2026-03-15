@@ -11,7 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <X11/keysym.h>
@@ -20,6 +22,9 @@
 #include <X11/Xlib.h>
 #include <X11/Xproto.h>
 #include <X11/Xutil.h>
+
+#include <fontconfig/fontconfig.h>
+#include <X11/Xft/Xft.h>
 
 #include <X11/extensions/Xinerama.h>
 #include <X11/Xcursor/Xcursor.h>
@@ -53,6 +58,7 @@ void hdl_config_ntf(XEvent *xev);
 void hdl_config_req(XEvent *xev);
 void hdl_dummy(XEvent *xev);
 void hdl_destroy_ntf(XEvent *xev);
+void hdl_enter_ntf(XEvent *xev);
 void hdl_keypress(XEvent *xev);
 void hdl_mapping_ntf(XEvent *xev);
 void hdl_map_req(XEvent *xev);
@@ -173,7 +179,12 @@ void drawbar(Monitor *m);
 void drawbars(void);
 void hdl_expose(XEvent *xev);
 void setup_bars(void);
+static int textw(const char *text);
 void updatestatus(void);
+Client *bar_client_at(Monitor *m, int click_x, int title_x, int title_w);
+int collect_bar_clients(int mon, Client **list, int max_clients);
+void monitor_workarea(int mon, int *x, int *y, int *w, int *h);
+Bool get_window_title(Window w, char *buf, size_t buflen);
 
 #include "config.h"
 
@@ -257,10 +268,70 @@ int reserve_top = 0;
 int reserve_bottom = 0;
 int current_layout = 0;
 XFontStruct *bar_font = NULL;
+XftFont *bar_xft_font = NULL;
 GC bar_gc;
 char stext[256] = "";
 int saved_argc = 0;
 char **saved_argv = NULL;
+
+void monitor_workarea(int mon, int *x, int *y, int *w, int *h)
+{
+	int idx = CLAMP(mon, 0, n_mons - 1);
+	int wx = mons[idx].x + mons[idx].reserve_left;
+	int wy = mons[idx].y + mons[idx].reserve_top;
+	int ww = mons[idx].w - mons[idx].reserve_left - mons[idx].reserve_right;
+	int wh = mons[idx].h - mons[idx].reserve_top - mons[idx].reserve_bottom;
+
+	if (x)
+		*x = wx;
+	if (y)
+		*y = wy;
+	if (w)
+		*w = MAX(1, ww);
+	if (h)
+		*h = MAX(1, wh);
+}
+
+Bool get_window_title(Window w, char *buf, size_t buflen)
+{
+	if (!buf || buflen == 0)
+		return False;
+
+	buf[0] = '\0';
+
+	XTextProperty prop = {0};
+	if (XGetTextProperty(dpy, w, &prop, atoms[ATOM_NET_WM_NAME]) && prop.value && prop.nitems > 0) {
+		size_t n = MIN((size_t)prop.nitems, buflen - 1);
+		memcpy(buf, prop.value, n);
+		buf[n] = '\0';
+		XFree(prop.value);
+		if (buf[0] != '\0')
+			return True;
+	}
+
+	char *name = NULL;
+	if (XFetchName(dpy, w, &name) && name) {
+		strncpy(buf, name, buflen - 1);
+		buf[buflen - 1] = '\0';
+		XFree(name);
+		if (buf[0] != '\0')
+			return True;
+	}
+
+	XClassHint ch = {0};
+	if (XGetClassHint(dpy, w, &ch)) {
+		if (ch.res_class && ch.res_class[0]) {
+			strncpy(buf, ch.res_class, buflen - 1);
+			buf[buflen - 1] = '\0';
+		}
+		if (ch.res_class)
+			XFree(ch.res_class);
+		if (ch.res_name)
+			XFree(ch.res_name);
+	}
+
+	return buf[0] != '\0';
+}
 
 Client *add_client(Window w, int ws)
 {
@@ -380,15 +451,20 @@ void apply_fullscreen(Client *c, Bool on)
 
 		c->fullscreen = True;
 
-		int mon = CLAMP(c->mon, 0, n_mons - 1);
-		/* make window fill mon */
-		XSetWindowBorderWidth(dpy, c->win, 0);
-		XMoveResizeWindow(dpy, c->win, mons[mon].x, mons[mon].y, mons[mon].w, mons[mon].h);
+		update_struts();
 
-		c->x = mons[mon].x;
-		c->y = mons[mon].y;
-		c->w = mons[mon].w;
-		c->h = mons[mon].h;
+		int mon = CLAMP(c->mon, 0, n_mons - 1);
+		int wx, wy, ww, wh;
+		monitor_workarea(mon, &wx, &wy, &ww, &wh);
+
+		/* make window fill monitor work area */
+		XSetWindowBorderWidth(dpy, c->win, 0);
+		XMoveResizeWindow(dpy, c->win, wx, wy, (unsigned int)ww, (unsigned int)wh);
+
+		c->x = wx;
+		c->y = wy;
+		c->w = ww;
+		c->h = wh;
 
 		XRaiseWindow(dpy, c->win);
 		window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_FULLSCREEN], True);
@@ -924,6 +1000,52 @@ void grab_keys(void)
 	}
 }
 
+int collect_bar_clients(int mon, Client **list, int max_clients)
+{
+	if (!list || max_clients <= 0)
+		return 0;
+
+	int n = 0;
+	for (Client *c = workspaces[current_ws]; c && n < max_clients; c = c->next) {
+		if (c->mon != mon || c->swallower)
+			continue;
+		list[n++] = c;
+	}
+
+	return n;
+}
+
+Client *bar_client_at(Monitor *m, int click_x, int title_x, int title_w)
+{
+	if (!m || title_w <= 0)
+		return NULL;
+
+	int mon = (int)(m - mons);
+	if (mon < 0 || mon >= n_mons)
+		return NULL;
+
+	if (click_x < title_x || click_x >= title_x + title_w)
+		return NULL;
+
+	Client *clients[MAX_CLIENTS];
+	int n = collect_bar_clients(mon, clients, MAX_CLIENTS);
+	if (n <= 0)
+		return NULL;
+
+	int each = title_w / n;
+	int rem = title_w % n;
+	int x = title_x;
+
+	for (int i = 0; i < n; i++) {
+		int w = each + (i == n - 1 ? rem : 0);
+		if (click_x >= x && click_x < x + w)
+			return clients[i];
+		x += w;
+	}
+
+	return NULL;
+}
+
 void hdl_button(XEvent *xev)
 {
 	XButtonEvent *xbutton = &xev->xbutton;
@@ -936,20 +1058,14 @@ void hdl_button(XEvent *xev)
 		int x = 0;
 		int tw = 0;
 		int lw = 0;
-		size_t status_len = strlen(stext);
-		if (bar_font)
-			tw = XTextWidth(bar_font, stext, (int)status_len) + 12;
-		else
-			tw = (int)status_len * 8 + 12;
+		tw = textw(stext) + 12;
+		if (m != current_mon)
+			tw = 0;
 
-		size_t lsymbol_len = strlen(layouts[current_layout].symbol);
-		if (bar_font)
-			lw = XTextWidth(bar_font, layouts[current_layout].symbol, (int)lsymbol_len) + 14;
-		else
-			lw = (int)lsymbol_len * 8 + 14;
+		lw = textw(layouts[current_layout].symbol) + 14;
 
 		for (int i = 0; i < NUM_WORKSPACES; i++) {
-			int w = bar_font ? XTextWidth(bar_font, tags[i], (int)strlen(tags[i])) + 14 : 30;
+			int w = textw(tags[i]) + 14;
 			if (xbutton->x >= x && xbutton->x < x + w) {
 				click = ClkTagBar;
 				arg.ui = (unsigned int)i;
@@ -961,8 +1077,63 @@ void hdl_button(XEvent *xev)
 		if (click != ClkTagBar) {
 			if (xbutton->x < x + lw)
 				click = ClkLtSymbol;
-			else if (xbutton->x > mons[m].w - tw)
+			else if (tw > 0 && xbutton->x > mons[m].w - tw)
 				click = ClkStatusText;
+		}
+
+		if (click == ClkWinTitle &&
+		    user_config.bar_show_tabs &&
+		    user_config.bar_click_focus_tabs &&
+		    xbutton->button == Button1 &&
+		    clean_mask(xbutton->state) == 0) {
+			int title_x = x + lw;
+			int title_w = MAX(0, mons[m].w - title_x - tw);
+			Client *target = bar_client_at(&mons[m], xbutton->x, title_x, title_w);
+			if (target) {
+				if (!target->mapped) {
+					XMapWindow(dpy, target->win);
+					target->mapped = True;
+					if (!global_floating && !target->floating && !target->fullscreen)
+						tile();
+					set_input_focus(target, True, False);
+					update_borders();
+					drawbars();
+				}
+				else if (target == focused) {
+					XUnmapWindow(dpy, target->win);
+					target->mapped = False;
+
+					Client *next_focus = NULL;
+					for (Client *c = workspaces[current_ws]; c; c = c->next) {
+						if (!c->mapped || c == target)
+							continue;
+						next_focus = c;
+						if (c->mon == target->mon)
+							break;
+					}
+
+					if (next_focus)
+						set_input_focus(next_focus, True, False);
+					else
+						set_input_focus(NULL, False, False);
+
+					tile();
+					update_borders();
+					drawbars();
+				}
+				else {
+					set_input_focus(target, True, False);
+				}
+			}
+			return;
+		}
+
+		if (click == ClkTagBar && xbutton->button == Button1) {
+			if (clean_mask(xbutton->state) & ShiftMask)
+				movetows(&arg);
+			else
+				viewws(&arg);
+			return;
 		}
 
 		for (size_t i = 0; i < LENGTH(buttons); i++) {
@@ -1168,6 +1339,27 @@ void hdl_dummy(XEvent *xev)
 	(void)xev;
 }
 
+void hdl_enter_ntf(XEvent *xev)
+{
+	if (!user_config.focus_follows_mouse || drag_mode != DRAG_NONE || in_ws_switch)
+		return;
+
+	XCrossingEvent *enter_ev = &xev->xcrossing;
+	if ((enter_ev->mode != NotifyNormal && enter_ev->mode != NotifyUngrab) ||
+		enter_ev->detail == NotifyInferior)
+		return;
+
+	Window w = find_toplevel(enter_ev->window);
+	if (!w || w == root)
+		return;
+
+	Client *c = find_client(w);
+	if (!c || !c->mapped || c == focused || c->ws != current_ws)
+		return;
+
+	set_input_focus(c, True, False);
+}
+
 void hdl_destroy_ntf(XEvent *xev)
 {
 	Window w = xev->xdestroywindow.window;
@@ -1253,7 +1445,6 @@ void hdl_keypress(XEvent *xev)
 {
 	unsigned int mods = (unsigned int)clean_mask(xev->xkey.state);
 	KeySym keysym = XLookupKeysym(&xev->xkey, 0);
-
 	for (size_t i = 0; i < LENGTH(keys); i++) {
 		if (keys[i].keysym != keysym)
 			continue;
@@ -1398,8 +1589,9 @@ void hdl_map_req(XEvent *xev)
 	/* center floating windows & set border */
 	if (c->floating && !c->fullscreen) {
 		int w_ = MAX(c->w, 64), h_ = MAX(c->h, 64);
-		int mx = mons[c->mon].x, my = mons[c->mon].y;
-		int mw = mons[c->mon].w, mh = mons[c->mon].h;
+		update_struts();
+		int mx, my, mw, mh;
+		monitor_workarea(c->mon, &mx, &my, &mw, &mh);
 		int x = mx + (mw - w_) / 2, y = my + (mh - h_) / 2;
 		c->x = x;
 		c->y = y;
@@ -1457,8 +1649,32 @@ void hdl_motion(XEvent *xev)
 {
 	XMotionEvent *motion_ev = &xev->xmotion;
 
-	if ((drag_mode == DRAG_NONE || !drag_client) ||
-		(motion_ev->time - last_motion_time <= (1000 / (Time)user_config.motion_throttle)))
+	if (drag_mode == DRAG_NONE || !drag_client) {
+		if (!user_config.focus_follows_mouse || in_ws_switch)
+			return;
+
+		Window w = find_toplevel(motion_ev->window);
+		if (!w || w == root) {
+			Window root_ret, child_ret;
+			int root_x, root_y, win_x, win_y;
+			unsigned int mask;
+			if (XQueryPointer(dpy, root, &root_ret, &child_ret, &root_x, &root_y, &win_x, &win_y, &mask) &&
+			    child_ret != None) {
+				w = find_toplevel(child_ret);
+			}
+		}
+		if (!w || w == root)
+			return;
+
+		Client *c = find_client(w);
+		if (!c || !c->mapped || c == focused || c->ws != current_ws)
+			return;
+
+		set_input_focus(c, True, False);
+		return;
+	}
+
+	if (motion_ev->time - last_motion_time <= (1000 / (Time)user_config.motion_throttle))
 		return;
 	last_motion_time = motion_ev->time;
 
@@ -1476,7 +1692,8 @@ void hdl_motion(XEvent *xev)
 			break;
 		}
 	}
-	Monitor *current_mon_motion = &mons[mon];
+	int work_x, work_y, work_w, work_h;
+	monitor_workarea(mon, &work_x, &work_y, &work_w, &work_h);
 
 	if (drag_mode == DRAG_SWAP) {
 		Window root_ret, child;
@@ -1530,14 +1747,14 @@ void hdl_motion(XEvent *xev)
 		int outer_h = drag_client->h + 2 * user_config.border_width;
 
 		/* snap relative to this mons bounds: */
-		int rel_x = nx - current_mon_motion->x;
-		int rel_y = ny - current_mon_motion->y;
+		int rel_x = nx - work_x;
+		int rel_y = ny - work_y;
 
-		rel_x = snap_coordinate(rel_x, outer_w, current_mon_motion->w, user_config.snap_distance);
-		rel_y = snap_coordinate(rel_y, outer_h, current_mon_motion->h, user_config.snap_distance);
+		rel_x = snap_coordinate(rel_x, outer_w, work_w, user_config.snap_distance);
+		rel_y = snap_coordinate(rel_y, outer_h, work_h, user_config.snap_distance);
 
-		nx = current_mon_motion->x + rel_x;
-		ny = current_mon_motion->y + rel_y;
+		nx = work_x + rel_x;
+		ny = work_y + rel_y;
 
 		if (!drag_client->floating && (UDIST(nx, drag_client->x) > user_config.snap_distance ||
 			UDIST(ny, drag_client->y) > user_config.snap_distance)) {
@@ -1555,8 +1772,8 @@ void hdl_motion(XEvent *xev)
 		int nh = drag_orig_h + dy;
 
 		/* clamp relative to this mon */
-		int max_w = (current_mon_motion->w - (drag_client->x - current_mon_motion->x));
-		int max_h = (current_mon_motion->h - (drag_client->y - current_mon_motion->y));
+		int max_w = (work_w - (drag_client->x - work_x));
+		int max_h = (work_h - (drag_client->y - work_y));
 
 		drag_client->w = CLAMP(nw, MIN_WINDOW_SIZE, max_w);
 		drag_client->h = CLAMP(nh, MIN_WINDOW_SIZE, max_h);
@@ -1646,6 +1863,17 @@ void init_defaults(void)
 	user_config.showbar = showbar ? True : False;
 	user_config.topbar = topbar ? True : False;
 	user_config.bar_height = barheight;
+	user_config.bar_show_tabs = bar_show_tabs ? True : False;
+	user_config.bar_click_focus_tabs = bar_click_focus_tabs ? True : False;
+	user_config.bar_show_title_fallback = bar_show_title_fallback ? True : False;
+	user_config.status_interval_sec = status_interval_sec;
+	user_config.status_use_root_name = status_use_root_name ? True : False;
+	user_config.status_enable_fallback = status_enable_fallback ? True : False;
+	user_config.status_show_disk = status_show_disk ? True : False;
+	user_config.status_show_disk_total = status_show_disk_total ? True : False;
+	user_config.status_disk_path = status_disk_path;
+	user_config.status_time_format = status_time_format;
+	user_config.status_separator = status_separator;
 
 	for (int i = 0; i < MAX_MONITORS; i++)
 		user_config.master_width[i] = master_width_default;
@@ -1670,6 +1898,7 @@ void init_defaults(void)
 	user_config.snap_distance = snap;
 	user_config.n_binds = 0;
 	user_config.new_win_focus = new_window_focus ? True : False;
+	user_config.focus_follows_mouse = focus_follows_mouse ? True : False;
 	user_config.warp_cursor = warp_cursor_on ? True : False;
 	user_config.new_win_master = new_window_master ? True : False;
 	user_config.floating_on_top = floating_on_top ? True : False;
@@ -2139,9 +2368,39 @@ void run(void)
 {
 	running = True;
 	XEvent xev;
+	time_t last_status_tick = 0;
+
 	while (running) {
-		XNextEvent(dpy, &xev);
-		xev_case(&xev);
+		while (XPending(dpy)) {
+			XNextEvent(dpy, &xev);
+			xev_case(&xev);
+		}
+
+		if (user_config.focus_follows_mouse && drag_mode == DRAG_NONE && !in_ws_switch) {
+			Window root_ret, child_ret;
+			int root_x, root_y, win_x, win_y;
+			unsigned int mask;
+
+			if (XQueryPointer(dpy, root, &root_ret, &child_ret,
+					  &root_x, &root_y, &win_x, &win_y, &mask) && child_ret != None) {
+				Window w = find_toplevel(child_ret);
+				if (w && w != root) {
+					Client *c = find_client(w);
+					if (c && c->mapped && c != focused && c->ws == current_ws)
+						set_input_focus(c, True, False);
+				}
+			}
+		}
+
+		time_t now = time(NULL);
+		if (user_config.status_interval_sec > 0 &&
+		    (last_status_tick == 0 || now - last_status_tick >= user_config.status_interval_sec)) {
+			last_status_tick = now;
+			updatestatus();
+			drawbars();
+		}
+
+		usleep(20000);
 	}
 }
 
@@ -2249,6 +2508,7 @@ void setup(void)
 	evtable[ConfigureNotify] = hdl_config_ntf;
 	evtable[ConfigureRequest] = hdl_config_req;
 	evtable[DestroyNotify] = hdl_destroy_ntf;
+	evtable[EnterNotify] = hdl_enter_ntf;
 	evtable[Expose] = hdl_expose;
 	evtable[KeyPress] = hdl_keypress;
 	evtable[MappingNotify] = hdl_mapping_ntf;
@@ -2279,6 +2539,15 @@ void setup_atoms(void)
 	const char *wmname = "cupidwm";
 	XChangeProperty(dpy, wm_check_win, atoms[ATOM_NET_WM_NAME], atoms[ATOM_UTF8_STRING], 8,
 			        PropModeReplace, (const unsigned char *)wmname, strlen(wmname));
+	XStoreName(dpy, wm_check_win, wmname);
+	{
+		XClassHint ch = {0};
+		ch.res_name = (char *)wmname;
+		ch.res_class = (char *)wmname;
+		XSetClassHint(dpy, wm_check_win, &ch);
+	}
+	XChangeProperty(dpy, root, atoms[ATOM_NET_WM_NAME], atoms[ATOM_UTF8_STRING], 8,
+		        PropModeReplace, (const unsigned char *)wmname, strlen(wmname));
 
 	/* workspace setup */
 	long num_workspaces = NUM_WORKSPACES;
@@ -3211,6 +3480,10 @@ void update_struts(void)
 	for (unsigned int i = 0; i < n_children; i++) {
 		Window w = children[i];
 
+		XWindowAttributes wa;
+		if (!XGetWindowAttributes(dpy, w, &wa) || wa.map_state != IsViewable)
+			continue;
+
 		Atom actual_type;
 		int actual_format;
 		unsigned long n_items, bytes_after;
@@ -3387,28 +3660,155 @@ static int textw(const char *text)
 {
 	if (!text)
 		return 0;
+	if (bar_xft_font) {
+		XGlyphInfo ext = {0};
+		XftTextExtentsUtf8(dpy, bar_xft_font, (const FcChar8 *)text, (int)strlen(text), &ext);
+		return (int)ext.xOff;
+	}
 	if (!bar_font)
 		return (int)strlen(text) * 8;
 	return XTextWidth(bar_font, text, (int)strlen(text));
+}
+
+static Bool xft_draw_text(XftDraw *draw, unsigned long color, int x, int y, const char *text, int len)
+{
+	if (!draw || !bar_xft_font || !text || len <= 0)
+		return False;
+
+	XRenderColor xr;
+	xr.red = (unsigned short)(((color >> 16) & 0xff) * 257);
+	xr.green = (unsigned short)(((color >> 8) & 0xff) * 257);
+	xr.blue = (unsigned short)((color & 0xff) * 257);
+	xr.alpha = 0xffff;
+
+	XftColor xc;
+	if (!XftColorAllocValue(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
+				 DefaultColormap(dpy, DefaultScreen(dpy)), &xr, &xc))
+		return False;
+
+	XftDrawStringUtf8(draw, &xc, bar_xft_font, x, y, (const FcChar8 *)text, len);
+	XftColorFree(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
+		     DefaultColormap(dpy, DefaultScreen(dpy)), &xc);
+	return True;
 }
 
 void updatestatus(void)
 {
 	char *name = NULL;
 	stext[0] = '\0';
-	if (XFetchName(dpy, root, &name) && name) {
+
+	if (user_config.status_use_root_name && XFetchName(dpy, root, &name) && name) {
 		strncpy(stext, name, sizeof(stext) - 1);
 		stext[sizeof(stext) - 1] = '\0';
 		XFree(name);
+	}
+
+	if (stext[0] == '\0' && user_config.status_enable_fallback) {
+		struct statvfs vfs;
+		unsigned long long avail_gb = 0;
+		unsigned long long total_gb = 0;
+		char diskbuf[96] = "";
+		char timebuf[96] = "";
+
+		const char *mount = user_config.status_disk_path ? user_config.status_disk_path : "/";
+		if (user_config.status_show_disk && statvfs(mount, &vfs) == 0) {
+			unsigned long long avail = (unsigned long long)vfs.f_bavail * (unsigned long long)vfs.f_frsize;
+			unsigned long long total = (unsigned long long)vfs.f_blocks * (unsigned long long)vfs.f_frsize;
+			avail_gb = avail / (1024ULL * 1024ULL * 1024ULL);
+			total_gb = total / (1024ULL * 1024ULL * 1024ULL);
+
+			if (user_config.status_show_disk_total && total_gb > 0)
+				snprintf(diskbuf, sizeof(diskbuf), "%s %llu/%lluG", mount, avail_gb, total_gb);
+			else
+				snprintf(diskbuf, sizeof(diskbuf), "%s %lluG", mount, avail_gb);
+		}
+
+		time_t now = time(NULL);
+		struct tm tm_now;
+		if (localtime_r(&now, &tm_now) && user_config.status_time_format && user_config.status_time_format[0])
+			strftime(timebuf, sizeof(timebuf), user_config.status_time_format, &tm_now);
+
+		if (diskbuf[0] && timebuf[0]) {
+			const char *sep = user_config.status_separator ? user_config.status_separator : " ";
+			snprintf(stext, sizeof(stext), "%s%s%s", diskbuf, sep, timebuf);
+		}
+		else if (diskbuf[0]) {
+			strncpy(stext, diskbuf, sizeof(stext) - 1);
+			stext[sizeof(stext) - 1] = '\0';
+		}
+		else if (timebuf[0]) {
+			strncpy(stext, timebuf, sizeof(stext) - 1);
+			stext[sizeof(stext) - 1] = '\0';
+		}
 	}
 }
 
 void setup_bars(void)
 {
+	update_struts();
+
 	if (!bar_font) {
-		bar_font = XLoadQueryFont(dpy, fontname);
-		if (!bar_font)
-			bar_font = XLoadQueryFont(dpy, "fixed");
+		const char *font_files[] = {
+			"undefined-medium.ttf",
+			"undefinemedium.ttf",
+			NULL
+		};
+
+		for (int i = 0; font_files[i] != NULL; i++) {
+			if (access(font_files[i], R_OK) == 0)
+				FcConfigAppFontAddFile(NULL, (const FcChar8 *)font_files[i]);
+		}
+
+		char exepath[PATH_MAX];
+		ssize_t exelen = readlink("/proc/self/exe", exepath, sizeof(exepath) - 1);
+		if (exelen > 0) {
+			exepath[exelen] = '\0';
+			char *slash = strrchr(exepath, '/');
+			if (slash) {
+				*slash = '\0';
+				for (int i = 0; font_files[i] != NULL; i++) {
+					char pathbuf[PATH_MAX];
+					size_t base_len = strlen(exepath);
+					size_t file_len = strlen(font_files[i]);
+					if (base_len + 1 + file_len + 1 > sizeof(pathbuf))
+						continue;
+					memcpy(pathbuf, exepath, base_len);
+					pathbuf[base_len] = '/';
+					memcpy(pathbuf + base_len + 1, font_files[i], file_len);
+					pathbuf[base_len + 1 + file_len] = '\0';
+					if (access(pathbuf, R_OK) == 0)
+						FcConfigAppFontAddFile(NULL, (const FcChar8 *)pathbuf);
+				}
+			}
+		}
+
+		const char *xft_candidates[] = {
+			fontname,
+			"undefined-medium",
+			"undefinemedium",
+			"sans-10",
+			NULL
+		};
+
+		for (int i = 0; xft_candidates[i] != NULL && !bar_xft_font; i++) {
+			if (!xft_candidates[i][0])
+				continue;
+			bar_xft_font = XftFontOpenName(dpy, DefaultScreen(dpy), xft_candidates[i]);
+		}
+
+		const char *font_candidates[] = {
+			fontname,
+			"undefined-medium",
+			"undefinemedium",
+			"fixed",
+			NULL
+		};
+
+		for (int i = 0; font_candidates[i] != NULL && !bar_font; i++) {
+			if (!font_candidates[i][0])
+				continue;
+			bar_font = XLoadQueryFont(dpy, font_candidates[i]);
+		}
 	}
 
 	if (!bar_gc) {
@@ -3416,7 +3816,11 @@ void setup_bars(void)
 		bar_gc = XCreateGC(dpy, root, 0, &gcv);
 	}
 
-	if (bar_font) {
+	if (bar_xft_font) {
+		if (user_config.bar_height <= 0)
+			user_config.bar_height = bar_xft_font->ascent + bar_xft_font->descent + 6;
+	}
+	else if (bar_font) {
 		XSetFont(dpy, bar_gc, bar_font->fid);
 		if (user_config.bar_height <= 0)
 			user_config.bar_height = bar_font->ascent + bar_font->descent + 6;
@@ -3433,12 +3837,20 @@ void setup_bars(void)
 		if (!user_config.showbar)
 			continue;
 
-		mons[i].bar_y = user_config.topbar ? mons[i].y : (mons[i].y + mons[i].h - user_config.bar_height);
+		if (user_config.topbar)
+			mons[i].bar_y = mons[i].y + mons[i].reserve_top - user_config.bar_height;
+		else
+			mons[i].bar_y = mons[i].y + mons[i].h - mons[i].reserve_bottom;
 		mons[i].barwin = XCreateSimpleWindow(
 			dpy, root, mons[i].x, mons[i].bar_y, (unsigned int)mons[i].w,
 			(unsigned int)user_config.bar_height, 0, pixel(user_config.bar_bg_col),
 			pixel(user_config.bar_bg_col)
 		);
+		{
+			Atom dock = atoms[ATOM_NET_WM_WINDOW_TYPE_DOCK];
+			XChangeProperty(dpy, mons[i].barwin, atoms[ATOM_NET_WM_WINDOW_TYPE], XA_ATOM, 32,
+						PropModeReplace, (unsigned char *)&dock, 1);
+		}
 		select_input(mons[i].barwin, ExposureMask | ButtonPressMask);
 		XMapRaised(dpy, mons[i].barwin);
 	}
@@ -3453,20 +3865,34 @@ void drawbar(Monitor *m)
 
 	int bh = user_config.bar_height;
 	int x = 0;
-	int y = bar_font ? ((bh - (bar_font->ascent + bar_font->descent)) / 2 + bar_font->ascent) : (bh - 6);
+	int font_h = bar_xft_font ? (bar_xft_font->ascent + bar_xft_font->descent)
+				     : (bar_font ? (bar_font->ascent + bar_font->descent) : 8);
+	int y = (bh - font_h) / 2 + (bar_xft_font ? bar_xft_font->ascent : (bar_font ? bar_font->ascent : bh - 6));
 	int is_curr_mon = (m == &mons[current_mon]);
+	Drawable d = m->barwin;
+	Pixmap barbuf = XCreatePixmap(dpy, m->barwin, (unsigned int)m->w, (unsigned int)bh,
+				      (unsigned int)DefaultDepth(dpy, DefaultScreen(dpy)));
+	XftDraw *xftdraw = NULL;
+	if (barbuf != None)
+		d = barbuf;
+	if (bar_xft_font)
+		xftdraw = XftDrawCreate(dpy, d, DefaultVisual(dpy, DefaultScreen(dpy)), DefaultColormap(dpy, DefaultScreen(dpy)));
 
 	XSetForeground(dpy, bar_gc, pixel(user_config.bar_bg_col));
-	XFillRectangle(dpy, m->barwin, bar_gc, 0, 0, (unsigned int)m->w, (unsigned int)bh);
+	XFillRectangle(dpy, d, bar_gc, 0, 0, (unsigned int)m->w, (unsigned int)bh);
 
 	for (int i = 0; i < NUM_WORKSPACES; i++) {
 		int tw = textw(tags[i]) + 14;
 		Bool selected = (i == current_ws);
 
 		XSetForeground(dpy, bar_gc, selected ? pixel(user_config.bar_sel_bg_col) : pixel(user_config.bar_bg_col));
-		XFillRectangle(dpy, m->barwin, bar_gc, x, 0, (unsigned int)tw, (unsigned int)bh);
+		XFillRectangle(dpy, d, bar_gc, x, 0, (unsigned int)tw, (unsigned int)bh);
 		XSetForeground(dpy, bar_gc, selected ? pixel(user_config.bar_sel_fg_col) : pixel(user_config.bar_fg_col));
-		XDrawString(dpy, m->barwin, bar_gc, x + 7, y, tags[i], (int)strlen(tags[i]));
+		if (bar_xft_font)
+			xft_draw_text(xftdraw, pixel(selected ? user_config.bar_sel_fg_col : user_config.bar_fg_col), x + 7, y,
+				      tags[i], (int)strlen(tags[i]));
+		else
+			XDrawString(dpy, d, bar_gc, x + 7, y, tags[i], (int)strlen(tags[i]));
 		x += tw;
 	}
 
@@ -3474,31 +3900,126 @@ void drawbar(Monitor *m)
 		const char *lsym = layouts[current_layout].symbol;
 		int tw = textw(lsym) + 14;
 		XSetForeground(dpy, bar_gc, pixel(user_config.bar_fg_col));
-		XDrawString(dpy, m->barwin, bar_gc, x + 7, y, lsym, (int)strlen(lsym));
+		if (bar_xft_font)
+			xft_draw_text(xftdraw, pixel(user_config.bar_fg_col), x + 7, y, lsym, (int)strlen(lsym));
+		else
+			XDrawString(dpy, d, bar_gc, x + 7, y, lsym, (int)strlen(lsym));
 		x += tw;
 	}
 
 	int status_w = is_curr_mon ? (textw(stext) + 12) : 0;
 	int title_x = x;
 	int title_w = MAX(0, m->w - title_x - status_w);
-	const char *title = "";
-	char *name = NULL;
-	if (focused && focused->mapped && focused->mon == current_mon &&
-	    XFetchName(dpy, focused->win, &name) && name) {
-		title = name;
-	}
-
 	if (title_w > 8) {
-		XSetForeground(dpy, bar_gc, pixel(user_config.bar_fg_col));
-		XDrawString(dpy, m->barwin, bar_gc, title_x + 6, y, title, (int)strlen(title));
-	}
+		int mon = (int)(m - mons);
+		Client *clients[MAX_CLIENTS];
+		int n = user_config.bar_show_tabs ? collect_bar_clients(mon, clients, MAX_CLIENTS) : 0;
 
-	if (name)
-		XFree(name);
+		if (n > 0) {
+			int each = title_w / n;
+			int rem = title_w % n;
+			int tx = title_x;
+
+			for (int i = 0; i < n; i++) {
+				Client *c = clients[i];
+				int tab_w = each + (i == n - 1 ? rem : 0);
+				Bool selected = (c == focused);
+				char title[256];
+				get_window_title(c->win, title, sizeof(title));
+
+				XSetForeground(dpy, bar_gc, selected ? pixel(user_config.bar_sel_bg_col) : pixel(user_config.bar_bg_col));
+				XFillRectangle(dpy, d, bar_gc, tx, 0, (unsigned int)tab_w, (unsigned int)bh);
+
+				XSetForeground(dpy, bar_gc, selected ? pixel(user_config.bar_sel_fg_col) : pixel(user_config.bar_fg_col));
+				if (tab_w > 10 && title[0]) {
+					char tbuf[256];
+					size_t tlen = strlen(title);
+					if (tlen >= sizeof(tbuf))
+						tlen = sizeof(tbuf) - 1;
+					memcpy(tbuf, title, tlen);
+					tbuf[tlen] = '\0';
+
+					while (tlen > 0 && textw(tbuf) > tab_w - 10) {
+						tlen--;
+						tbuf[tlen] = '\0';
+					}
+
+					if (tlen > 0) {
+						if (bar_xft_font)
+							xft_draw_text(xftdraw, pixel(selected ? user_config.bar_sel_fg_col : user_config.bar_fg_col),
+								      tx + 5, y, tbuf, (int)tlen);
+						else
+							XDrawString(dpy, d, bar_gc, tx + 5, y, tbuf, (int)tlen);
+					}
+				}
+
+				tx += tab_w;
+			}
+		}
+		else if (user_config.bar_show_title_fallback) {
+			Client *tc = NULL;
+			if (focused && focused->mapped && focused->mon == mon && focused->ws == current_ws && !focused->swallower)
+				tc = focused;
+			if (!tc) {
+				for (Client *c = workspaces[current_ws]; c; c = c->next) {
+					if (!c->mapped || c->mon != mon || c->swallower)
+						continue;
+					tc = c;
+					break;
+				}
+			}
+
+			XSetForeground(dpy, bar_gc, pixel(user_config.bar_bg_col));
+			XFillRectangle(dpy, d, bar_gc, title_x, 0, (unsigned int)title_w, (unsigned int)bh);
+
+			if (tc) {
+				char title[256];
+				get_window_title(tc->win, title, sizeof(title));
+
+				if (title[0]) {
+					char tbuf[256];
+					size_t tlen = strlen(title);
+					if (tlen >= sizeof(tbuf))
+						tlen = sizeof(tbuf) - 1;
+					memcpy(tbuf, title, tlen);
+					tbuf[tlen] = '\0';
+
+					while (tlen > 0 && textw(tbuf) > title_w - 10) {
+						tlen--;
+						tbuf[tlen] = '\0';
+					}
+
+					if (tlen > 0) {
+						XSetForeground(dpy, bar_gc, pixel(user_config.bar_fg_col));
+						if (bar_xft_font)
+							xft_draw_text(xftdraw, pixel(user_config.bar_fg_col), title_x + 5, y, tbuf, (int)tlen);
+						else
+							XDrawString(dpy, d, bar_gc, title_x + 5, y, tbuf, (int)tlen);
+					}
+				}
+
+			}
+		}
+		else {
+			XSetForeground(dpy, bar_gc, pixel(user_config.bar_bg_col));
+			XFillRectangle(dpy, d, bar_gc, title_x, 0, (unsigned int)title_w, (unsigned int)bh);
+		}
+	}
 
 	if (is_curr_mon && status_w > 0) {
 		XSetForeground(dpy, bar_gc, pixel(user_config.bar_fg_col));
-		XDrawString(dpy, m->barwin, bar_gc, m->w - status_w + 6, y, stext, (int)strlen(stext));
+		if (bar_xft_font)
+			xft_draw_text(xftdraw, pixel(user_config.bar_fg_col), m->w - status_w + 6, y, stext, (int)strlen(stext));
+		else
+			XDrawString(dpy, d, bar_gc, m->w - status_w + 6, y, stext, (int)strlen(stext));
+	}
+
+	if (xftdraw)
+		XftDrawDestroy(xftdraw);
+
+	if (barbuf != None) {
+		XCopyArea(dpy, barbuf, m->barwin, bar_gc, 0, 0, (unsigned int)m->w, (unsigned int)bh, 0, 0);
+		XFreePixmap(dpy, barbuf);
 	}
 }
 

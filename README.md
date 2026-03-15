@@ -14,7 +14,7 @@ Features
 - Swallowing rules
 - Multi-monitor support (Xinerama)
 - EWMH basics (`_NET_CURRENT_DESKTOP`, `_NET_ACTIVE_WINDOW`, `_NET_WORKAREA`, etc.)
-- Built-in Xlib bar (tags, layout symbol, focused title, root-name status)
+- Built-in Xlib bar (tags, layout symbol, clickable tabs, root-name or fallback status)
 - Autostart command list from source
 
 Basic X11 Setup
@@ -130,6 +130,30 @@ make clean
 make
 sudo make install
 ```
+
+Bar and Status Options
+----------------------
+
+The bar behavior is fully configurable in `config.h`:
+
+- `showbar`, `topbar`, `barheight`, `fontname`
+- `tags[]` for workspace labels
+- `bar_show_tabs` to enable per-window tabs in the title area
+- `bar_click_focus_tabs` to focus windows by clicking tabs
+- `bar_show_title_fallback` to show a single title when tabs are disabled/empty
+
+Built-in status behavior is also configurable:
+
+- `status_interval_sec` update cadence (`0` disables periodic refresh)
+- `status_use_root_name` to use `xsetroot -name` text when present
+- `status_enable_fallback` to use built-in status when root name is empty
+- `status_show_disk`, `status_show_disk_total`, `status_disk_path`
+- `status_time_format` (strftime format)
+- `status_separator` between disk and time sections
+
+Mouse focus behavior is configurable too:
+
+- `focus_follows_mouse` enables/disables hover-to-focus (DWM-style)
 
 Project Layout
 --------------
