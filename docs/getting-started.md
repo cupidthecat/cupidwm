@@ -1,0 +1,66 @@
+# Getting Started
+
+## Dependencies
+
+Required runtime/build stack:
+
+- Xorg server and `xinit`
+- C compiler and `make`
+- Development headers for `libX11`, `libXinerama`, `libXcursor`, `libXft`, `fontconfig`, `freetype`
+
+Install with distro detection:
+
+```sh
+./scripts/install-deps.sh --yes
+```
+
+Useful flags:
+
+- `--build-only`: skip smoke-test tools
+- `--dry-run`: print commands without installing
+
+## Build
+
+```sh
+make
+```
+
+Debug + sanitizers build:
+
+```sh
+make debug
+```
+
+## Run
+
+Run directly:
+
+```sh
+./cupidwm
+```
+
+Run from `startx` by creating `~/.xinitrc`:
+
+```sh
+#!/bin/sh
+while xsetroot -name "$(date '+%a %b %d %H:%M')"; do
+  sleep 5
+done &
+exec cupidwm
+```
+
+## Test
+
+```sh
+make test-smoke
+make test-ewmh
+```
+
+Or run full local checks:
+
+```sh
+make check
+```
+
+If Xephyr/X11 test dependencies are not installed, `make check` will skip the
+integration suites and still run build/static steps.

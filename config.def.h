@@ -32,6 +32,8 @@ static const char status_time_label[] = "";
 static const char status_section_order[] = "disk,cpu,ram,battery,time";
 static const char status_time_format[] = "%Y-%m-%d %H:%M";
 static const char status_separator[] = " | ";
+static const int status_allow_external_cmd = 0;
+static const char status_external_cmd[] = "";
 
 static const char col_border_focused[] = "#000000";
 static const char col_border_unfocused[] = "#444444";
@@ -54,6 +56,8 @@ static const int floating_on_top = 1;
 static const int new_window_master = 0;
 static const int default_gaps = 5;
 static const float master_width_default = 0.60f;
+static const int ipc_enable = 0;
+static const char ipc_socket_path[] = "";
 
 /* workspaces */
 static const char *tags[NUM_WORKSPACES] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };

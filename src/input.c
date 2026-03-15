@@ -185,6 +185,10 @@ void hdl_button(XEvent *xev)
 		set_input_focus(focused, True, False);
 		return;
 	}
+
+	update_struts();
+	tile();
+	update_borders();
 }
 
 void hdl_button_release(XEvent *xev)
@@ -210,14 +214,47 @@ void hdl_button_release(XEvent *xev)
 
 void hdl_client_msg(XEvent *xev)
 {
-	if (xev->xclient.message_type == atoms[ATOM_NET_CURRENT_DESKTOP]) {
-		int ws = (int)xev->xclient.data.l[0];
+	XClientMessageEvent *client_msg_ev = &xev->xclient;
+
+	if (client_msg_ev->message_type == atoms[ATOM_NET_CURRENT_DESKTOP]) {
+		int ws = (int)client_msg_ev->data.l[0];
 		change_workspace(ws);
 		return;
 	}
 
-	if (xev->xclient.message_type == atoms[ATOM_NET_WM_STATE]) {
-		XClientMessageEvent *client_msg_ev = &xev->xclient;
+	if (client_msg_ev->message_type == atoms[ATOM_NET_ACTIVE_WINDOW]) {
+		Window w = find_toplevel(client_msg_ev->window);
+		Client *c = find_client(w);
+		if (!c)
+			return;
+
+		if (c->ws != current_ws)
+			change_workspace(c->ws);
+		if (!c->mapped) {
+			XMapWindow(dpy, c->win);
+			c->mapped = True;
+			tile();
+		}
+
+		set_input_focus(c, True, True);
+		return;
+	}
+
+	if (client_msg_ev->message_type == atoms[ATOM_NET_WM_DESKTOP]) {
+		int ws = (int)client_msg_ev->data.l[0];
+		if (ws < 0 || ws >= NUM_WORKSPACES)
+			return;
+
+		Window w = find_toplevel(client_msg_ev->window);
+		Client *c = find_client(w);
+		if (!c)
+			return;
+
+		move_client_to_workspace(c, ws, False);
+		return;
+	}
+
+	if (client_msg_ev->message_type == atoms[ATOM_NET_WM_STATE]) {
 		Window w = client_msg_ev->window;
 		Client *c = find_client(find_toplevel(w));
 		if (!c)
@@ -453,6 +490,15 @@ void hdl_map_req(XEvent *xev)
 		return;
 	}
 
+	if (window_is_dock(w)) {
+		select_input(w, PropertyChangeMask | StructureNotifyMask);
+		XMapWindow(dpy, w);
+		update_struts();
+		tile();
+		update_borders();
+		return;
+	}
+
 
 	Atom type;
 	int format;
@@ -460,16 +506,10 @@ void hdl_map_req(XEvent *xev)
 	Atom *types = NULL;
 	Bool should_float = False;
 
-	if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_WINDOW_TYPE], 0, 4, False, XA_ATOM, &type, &format,
+	if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_WINDOW_TYPE], 0, 8, False, XA_ATOM, &type, &format,
 	    &n_items, &after, (unsigned char **)&types) == Success && types) {
 		if (type == XA_ATOM && format == 32) {
 			for (unsigned long i = 0; i < n_items; i++) {
-				if (types[i] == atoms[ATOM_NET_WM_WINDOW_TYPE_DOCK]) {
-					XFree(types);
-					XMapWindow(dpy, w);
-					return;
-				}
-
 				if (types[i] == atoms[ATOM_NET_WM_WINDOW_TYPE_UTILITY] ||
 					types[i] == atoms[ATOM_NET_WM_WINDOW_TYPE_DIALOG]  ||
 					types[i] == atoms[ATOM_NET_WM_WINDOW_TYPE_TOOLBAR] ||
@@ -779,21 +819,26 @@ void hdl_property_ntf(XEvent *xev)
 			unsigned long n;
 			unsigned long after;
 			if (XGetWindowProperty(dpy, root, atoms[ATOM_NET_CURRENT_DESKTOP], 0, 1, False, XA_CARDINAL, &actual,
-						           &fmt, &n, &after, (unsigned char **)&val) == Success && val) {
+					       &fmt, &n, &after, (unsigned char **)&val) == Success && val) {
 				if (actual == XA_CARDINAL && fmt == 32 && n >= 1)
 					change_workspace((int)val[0]);
 				XFree(val);
 			}
 		}
-		else if (property_ev->atom == atoms[ATOM_NET_WM_STRUT_PARTIAL]) {
-			update_struts();
-			tile();
-			update_borders();
-		}
 		else if (property_ev->atom == XA_WM_NAME || property_ev->atom == atoms[ATOM_NET_WM_NAME]) {
 			updatestatus();
 			drawbars();
 		}
+	}
+
+	if ((property_ev->atom == atoms[ATOM_NET_WM_STRUT] ||
+	     property_ev->atom == atoms[ATOM_NET_WM_STRUT_PARTIAL]) &&
+	    property_ev->window != root &&
+	    window_is_dock(property_ev->window)) {
+		update_struts();
+		tile();
+		update_borders();
+		return;
 	}
 
 	/* client window properties */

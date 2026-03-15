@@ -213,6 +213,8 @@ grep -q "_NET_SUPPORTING_WM_CHECK" "${LOG_DIR}/root-props.log" || fail "EWMH roo
 
 xprop -root _NET_CLIENT_LIST >"${LOG_DIR}/client-list-init.log" 2>&1 || true
 grep -q "_NET_CLIENT_LIST" "${LOG_DIR}/client-list-init.log" || fail "_NET_CLIENT_LIST missing"
+xprop -root _NET_CLIENT_LIST_STACKING >"${LOG_DIR}/client-list-stacking-init.log" 2>&1 || true
+grep -q "_NET_CLIENT_LIST_STACKING" "${LOG_DIR}/client-list-stacking-init.log" || fail "_NET_CLIENT_LIST_STACKING missing"
 
 spawn_xterm "ws-a" -title "ws-a" -class st -geometry 80x24+50+50
 wid_a="$(wait_visible_window_by_name '^ws-a$' || true)"
@@ -312,6 +314,8 @@ fi
 
 xprop -root _NET_CLIENT_LIST >"${LOG_DIR}/client-list-final.log" 2>&1 || true
 grep -q "_NET_CLIENT_LIST" "${LOG_DIR}/client-list-final.log" || fail "_NET_CLIENT_LIST missing at end of smoke run"
+xprop -root _NET_CLIENT_LIST_STACKING >"${LOG_DIR}/client-list-stacking-final.log" 2>&1 || true
+grep -q "_NET_CLIENT_LIST_STACKING" "${LOG_DIR}/client-list-stacking-final.log" || fail "_NET_CLIENT_LIST_STACKING missing at end of smoke run"
 
 wm_alive
 
