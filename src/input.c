@@ -1232,6 +1232,13 @@ void hdl_motion(XEvent *xev)
 		Client *c = find_client(w);
 			if (!client_is_visible(c) || c == focused)
 				return;
+		if ((c->suppress_enter_focus_once || c->suppress_focus_until_sec > 0) && c->no_focus_on_map) {
+			long now = (long)time(NULL);
+			if (c->suppress_focus_until_sec == 0 || now <= c->suppress_focus_until_sec)
+				return;
+			c->suppress_focus_until_sec = 0;
+			c->suppress_enter_focus_once = False;
+		}
 
 		set_input_focus(c, True, False);
 		return;

@@ -321,7 +321,7 @@ sleep 0.1
 wid_a_hex="0x$(printf '%x' "${wid_a}")"
 wait_focus_window "${wid_a_hex}" >/dev/null || true
 
-spawn_xterm "rule-substr-nofocus" -title "my-cupidwm-substr-nofocus-window" -class st -geometry 80x24+120+120
+spawn_xterm "rule-substr-nofocus" -name "my-cupidwm-substr-nofocus-window" -title "my-cupidwm-substr-nofocus-window" -class "my-cupidwm-substr-nofocus-window" -geometry 80x24+120+120
 pid_rule="${last_spawn_pid}"
 wid_rule="$(wait_visible_window_by_pid "${pid_rule}" || wait_visible_window_by_name '^my-cupidwm-substr-nofocus-window$' || true)"
 [ -n "${wid_rule}" ] || fail "rule no-focus test window did not appear"
