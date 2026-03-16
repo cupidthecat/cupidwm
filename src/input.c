@@ -532,6 +532,12 @@ void hdl_client_msg(XEvent *xev)
 		Client *c = find_client(w);
 		if (!c)
 			return;
+		if (c->suppress_focus_until_sec > 0) {
+			long now = (long)time(NULL);
+			if (now <= c->suppress_focus_until_sec)
+				return;
+			c->suppress_focus_until_sec = 0;
+		}
 
 		if (c->mon != current_mon) {
 			current_mon = CLAMP(c->mon, 0, n_mons - 1);
@@ -985,7 +991,7 @@ void hdl_map_req(XEvent *xev)
 			}
 				if (c->no_focus_on_map) {
 					c->suppress_enter_focus_once = True;
-					c->suppress_focus_until_sec = (long)time(NULL) + 1;
+					c->suppress_focus_until_sec = (long)time(NULL) + 2;
 				}
 			update_borders();
 		}
@@ -1197,7 +1203,7 @@ void hdl_map_req(XEvent *xev)
 	}
 	if (c->no_focus_on_map) {
 		c->suppress_enter_focus_once = True;
-		c->suppress_focus_until_sec = (long)time(NULL) + 1;
+		c->suppress_focus_until_sec = (long)time(NULL) + 2;
 }
 	update_borders();
 }
