@@ -117,7 +117,6 @@ void setup_bars(void)
 			bar_font = XLoadQueryFont(dpy, font_candidates[i]);
 		}
 	}
-
 	if (!bar_gc) {
 		XGCValues gcv = {0};
 		bar_gc = XCreateGC(dpy, root, 0, &gcv);
@@ -168,7 +167,6 @@ void setup_bars(void)
 		}
 		XMapRaised(dpy, mons[i].barwin);
 	}
-
 	drawbars();
 }
 

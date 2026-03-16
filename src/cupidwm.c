@@ -376,6 +376,8 @@ Bool status_override_active = False;
 int saved_argc = 0;
 char **saved_argv = NULL;
 static char session_state_path_buf[PATH_MAX] = {0};
+static int monitor_topology_prev_count = -1;
+static unsigned long long monitor_topology_prev_sig = 0;
 
 void monitor_workarea(int mon, int *x, int *y, int *w, int *h)
 {
@@ -814,22 +816,30 @@ static int query_active_monitors(Monitor *out, int cap, Bool *used_randr)
 	return 1;
 }
 
-static void snapshot_monitor_topology(unsigned long long *sig_out, int *count_out)
+static unsigned long long monitor_topology_signature(const Monitor *monitor_list, int count,
+                                                     int display_width, int display_height)
 {
 	unsigned long long sig = 1469598103934665603ULL;
-	Monitor discovered[MAX_MONITORS];
-	Bool used_randr = False;
-	int count = query_active_monitors(discovered, MAX_MONITORS, &used_randr);
 
-	sig = mix_u64(sig, (unsigned long long)(unsigned int)XDisplayWidth(dpy, DefaultScreen(dpy)));
-	sig = mix_u64(sig, (unsigned long long)(unsigned int)XDisplayHeight(dpy, DefaultScreen(dpy)));
-	sig = mix_u64(sig, used_randr ? 1ULL : 0ULL);
+	sig = mix_u64(sig, (unsigned long long)(unsigned int)display_width);
+	sig = mix_u64(sig, (unsigned long long)(unsigned int)display_height);
 	for (int i = 0; i < count; i++) {
-		sig = mix_u64(sig, (unsigned long long)(unsigned int)discovered[i].x);
-		sig = mix_u64(sig, (unsigned long long)(unsigned int)discovered[i].y);
-		sig = mix_u64(sig, (unsigned long long)(unsigned int)discovered[i].w);
-		sig = mix_u64(sig, (unsigned long long)(unsigned int)discovered[i].h);
+		sig = mix_u64(sig, (unsigned long long)(unsigned int)monitor_list[i].x);
+		sig = mix_u64(sig, (unsigned long long)(unsigned int)monitor_list[i].y);
+		sig = mix_u64(sig, (unsigned long long)(unsigned int)monitor_list[i].w);
+		sig = mix_u64(sig, (unsigned long long)(unsigned int)monitor_list[i].h);
 	}
+
+	return sig;
+}
+
+static void snapshot_monitor_topology(unsigned long long *sig_out, int *count_out)
+{
+	Monitor discovered[MAX_MONITORS];
+	int count = query_active_monitors(discovered, MAX_MONITORS, NULL);
+	unsigned long long sig = monitor_topology_signature(discovered, count,
+	                                                    XDisplayWidth(dpy, DefaultScreen(dpy)),
+	                                                    XDisplayHeight(dpy, DefaultScreen(dpy)));
 
 	if (sig_out)
 		*sig_out = sig;
@@ -837,24 +847,33 @@ static void snapshot_monitor_topology(unsigned long long *sig_out, int *count_ou
 		*count_out = count;
 }
 
+static void monitor_topology_seed_current(void)
+{
+	if (!mons || n_mons <= 0) {
+		monitor_topology_prev_count = -1;
+		monitor_topology_prev_sig = 0;
+		return;
+	}
+
+	monitor_topology_prev_count = n_mons;
+	monitor_topology_prev_sig = monitor_topology_signature(mons, n_mons, scr_width, scr_height);
+}
+
 Bool monitor_topology_changed(void)
 {
-	static int prev_count = -1;
-	static unsigned long long prev_sig = 0;
-
 	unsigned long long sig = 0;
 	int count = 0;
 	snapshot_monitor_topology(&sig, &count);
 
-	if (prev_count < 0) {
-		prev_count = count;
-		prev_sig = sig;
+	if (monitor_topology_prev_count < 0) {
+		monitor_topology_prev_count = count;
+		monitor_topology_prev_sig = sig;
 		return False;
 	}
 
-	Bool changed = (count != prev_count || sig != prev_sig);
-	prev_count = count;
-	prev_sig = sig;
+	Bool changed = (count != monitor_topology_prev_count || sig != monitor_topology_prev_sig);
+	monitor_topology_prev_count = count;
+	monitor_topology_prev_sig = sig;
 	return changed;
 }
 
@@ -2827,6 +2846,26 @@ long parse_col(const char *hex)
 	return ((long)col.pixel) | (0xffL << 24);
 }
 
+static void destroy_wm_windows(void)
+{
+	if (!dpy)
+		return;
+
+	if (mons) {
+		for (int i = 0; i < n_mons; i++) {
+			if (!mons[i].barwin)
+				continue;
+			XDestroyWindow(dpy, mons[i].barwin);
+			mons[i].barwin = 0;
+		}
+	}
+
+	if (wm_check_win) {
+		XDestroyWindow(dpy, wm_check_win);
+		wm_check_win = None;
+	}
+}
+
 void quit(void)
 {
 	if (!running && dpy == NULL)
@@ -2847,6 +2886,7 @@ void quit(void)
 
 	ipc_cleanup();
 	if (dpy) {
+		destroy_wm_windows();
 		XSync(dpy, False);
 		if (cursor_move)
 			XFreeCursor(dpy, cursor_move);
@@ -2863,7 +2903,12 @@ void quit(void)
 void reload_config(void)
 {
 	session_state_save();
-	restartwm(NULL);
+	update_mons();
+	setup_bars();
+	update_struts();
+	session_state_restore();
+	update_borders();
+	drawbars();
 }
 
 void remove_scratchpad(int n)
@@ -3267,7 +3312,7 @@ void setup(void)
 
 	update_mons();
 	publish_current_desktop();
-	monitor_topology_changed(); /* seed topology baseline */
+	monitor_topology_seed_current();
 	setup_bars();
 	updatestatus();
 
@@ -4049,6 +4094,7 @@ void restartwm(const Arg *arg)
 
 	ipc_cleanup();
 	if (dpy) {
+		destroy_wm_windows();
 		XSync(dpy, False);
 		if (cursor_move)
 			XFreeCursor(dpy, cursor_move);
