@@ -322,29 +322,161 @@ static Bool status_append_named_segment(char *dest, size_t destsz, const char *s
 	return True;
 }
 
+enum { STATUS_EXTERNAL_CMD_TIMEOUT_MS = 200 };
+
+static long status_elapsed_ms(const struct timespec *start)
+{
+	if (!start)
+		return -1;
+
+	struct timespec now;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+		return -1;
+
+	long secdiff = now.tv_sec - start->tv_sec;
+	long nsecdiff = now.tv_nsec - start->tv_nsec;
+	if (nsecdiff < 0) {
+		secdiff -= 1;
+		nsecdiff += 1000000000L;
+	}
+	return secdiff * 1000L + nsecdiff / 1000000L;
+}
+
 static Bool run_external_status_command(char *dest, size_t destsz)
 {
 	if (!dest || destsz == 0 || !user_config.status_external_cmd || !user_config.status_external_cmd[0])
 		return False;
 
-	FILE *pipe = popen(user_config.status_external_cmd, "r");
-	if (!pipe)
+	int pipefds[2];
+	if (pipe(pipefds) < 0)
 		return False;
 
+	pid_t pid = fork();
+	if (pid < 0) {
+		close(pipefds[0]);
+		close(pipefds[1]);
+		return False;
+	}
+
+	if (pid == 0) {
+		close(pipefds[0]);
+		if (dup2(pipefds[1], STDOUT_FILENO) < 0)
+			_exit(127);
+		if (dup2(pipefds[1], STDERR_FILENO) < 0)
+			_exit(127);
+		close(pipefds[1]);
+		execl("/bin/sh", "sh", "-c", user_config.status_external_cmd, (char *)NULL);
+		_exit(127);
+	}
+
+	close(pipefds[1]);
+
+	int flags = fcntl(pipefds[0], F_GETFL);
+	if (flags >= 0)
+		fcntl(pipefds[0], F_SETFL, flags | O_NONBLOCK);
+
 	dest[0] = '\0';
-	if (fgets(dest, (int)destsz, pipe)) {
-		size_t n = strlen(dest);
-		while (n > 0 && (dest[n - 1] == '\n' || dest[n - 1] == '\r')) {
-			dest[n - 1] = '\0';
-			n--;
+	struct timespec start = {0};
+	if (clock_gettime(CLOCK_MONOTONIC, &start) < 0)
+		start.tv_sec = start.tv_nsec = 0;
+
+	size_t used = 0;
+	Bool have_line = False;
+	Bool timed_out = False;
+
+	while (used < destsz - 1 && !have_line && !timed_out) {
+		long elapsed = status_elapsed_ms(&start);
+		if (elapsed < 0) {
+			break;
+		}
+
+		long remaining = STATUS_EXTERNAL_CMD_TIMEOUT_MS - elapsed;
+		if (remaining <= 0) {
+			timed_out = True;
+			break;
+		}
+
+		struct timeval timeout = {
+			.tv_sec = remaining / 1000,
+			.tv_usec = (remaining % 1000) * 1000
+		};
+
+		fd_set rfds;
+		FD_ZERO(&rfds);
+		FD_SET(pipefds[0], &rfds);
+
+		int sel = select(pipefds[0] + 1, &rfds, NULL, NULL, &timeout);
+		if (sel < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		if (sel == 0) {
+			timed_out = True;
+			break;
+		}
+
+		if (!FD_ISSET(pipefds[0], &rfds))
+			continue;
+
+		ssize_t n = read(pipefds[0], dest + used, destsz - 1 - used);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				continue;
+			break;
+		}
+		if (n == 0) {
+			have_line = used > 0;
+			break;
+		}
+
+		size_t prev = used;
+		used += (size_t)n;
+		if (used > destsz - 1)
+			used = destsz - 1;
+
+		for (size_t i = prev; i < used; i++) {
+			if (dest[i] == '\n' || dest[i] == '\r') {
+				used = i;
+				have_line = True;
+				break;
+			}
 		}
 	}
 
-	int rc = pclose(pipe);
-	if (rc == -1)
-		return False;
+	close(pipefds[0]);
 
-	return dest[0] != '\0';
+	int status = 0;
+	pid_t waited = waitpid(pid, &status, WNOHANG);
+	if (waited == 0) {
+		kill(pid, SIGKILL);
+		while (waitpid(pid, &status, 0) < 0) {
+			if (errno != EINTR)
+				break;
+		}
+	}
+	else if (waited == -1 && errno != ECHILD) {
+		kill(pid, SIGKILL);
+		while (waitpid(pid, &status, 0) < 0) {
+			if (errno != EINTR)
+				break;
+		}
+	}
+
+	if (timed_out) {
+		dest[0] = '\0';
+		return False;
+	}
+
+	dest[used] = '\0';
+	while (used > 0 && (dest[used - 1] == '\n' || dest[used - 1] == '\r')) {
+		dest[used - 1] = '\0';
+		used--;
+	}
+
+	return used > 0;
 }
 
 typedef struct {
