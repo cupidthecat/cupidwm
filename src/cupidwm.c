@@ -172,6 +172,8 @@ Bool window_should_start_fullscreen(Window w);
 void ipc_cleanup(void);
 int ipc_get_server_fd(void);
 void ipc_handle_connection(void);
+void ipc_fdset_prepare(fd_set *fds, int *maxfd);
+Bool ipc_fdset_has_ready(const fd_set *fds);
 int ipc_setup(void);
 const char *ipc_resolve_socket_path(const char *configured_path, char *out, size_t outsz);
 void ipc_notify_event(const char *event, const char *details);
@@ -3073,7 +3075,6 @@ void run(void)
 		long timeout_ms = -1;
 		time_t now = time(NULL);
 		Bool handled_xevents = False;
-		int ipcfd = ipc_get_server_fd();
 
 		if (!status_text_override_active() && user_config.status_interval_sec > 0) {
 			if (last_status_tick == 0)
@@ -3090,7 +3091,7 @@ void run(void)
 			timeout_ms = (timeout_ms < 0) ? focus_poll_ms : MIN(timeout_ms, focus_poll_ms);
 		}
 
-		if (ipcfd >= 0)
+		if (ipc_get_server_fd() >= 0)
 			ipc_handle_connection();
 
 		if (!running)
@@ -3109,10 +3110,7 @@ void run(void)
 			int maxfd = xfd;
 
 			int fifo_fd = status_fifo_fd();
-			if (ipcfd >= 0) {
-				FD_SET(ipcfd, &fds);
-				maxfd = MAX(maxfd, ipcfd);
-			}
+			ipc_fdset_prepare(&fds, &maxfd);
 			if (fifo_fd >= 0) {
 				FD_SET(fifo_fd, &fds);
 				maxfd = MAX(maxfd, fifo_fd);
@@ -3131,24 +3129,24 @@ void run(void)
 				selret = select(maxfd + 1, &fds, NULL, NULL, tvp);
 			} while (selret < 0 && errno == EINTR);
 
-			if (selret > 0) {
-				if (ipcfd >= 0 && FD_ISSET(ipcfd, &fds))
-					ipc_handle_connection();
+				if (selret > 0) {
+					if (ipc_fdset_has_ready(&fds))
+						ipc_handle_connection();
 
-				if (fifo_fd >= 0 && FD_ISSET(fifo_fd, &fds))
-					status_fifo_handle_readable();
+					if (fifo_fd >= 0 && FD_ISSET(fifo_fd, &fds))
+						status_fifo_handle_readable();
 
-				if (!running)
-					break;
+					if (!running)
+						break;
 
-				if (FD_ISSET(xfd, &fds)) {
-					while (running && XPending(dpy)) {
-						XNextEvent(dpy, &xev);
-						handle_xevent(&xev);
-						handled_xevents = True;
+					if (FD_ISSET(xfd, &fds)) {
+						while (running && XPending(dpy)) {
+							XNextEvent(dpy, &xev);
+							handle_xevent(&xev);
+							handled_xevents = True;
+						}
 					}
 				}
-			}
 		}
 
 		if (!running)

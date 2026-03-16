@@ -2,7 +2,12 @@
 
 ## 2026-03-17
 
-- Hardened IPC client handling so accepted sockets are nonblocking, require newline-terminated commands, and fail fast when no command is available to prevent hung clients from stalling the WM loop.
+- Reworked IPC command intake to stage accepted sockets in a pending nonblocking client queue integrated into the WM `select()` loop, so slow writers no longer risk delaying unrelated event-loop work.
+- Added explicit low-level IPC command guardrails:
+  - newline-terminated command deadline (~200 ms) with `error read timeout`
+  - oversized command rejection with `error command too long`
+- Hardened JSON IPC output by escaping dynamic string fields in JSON replies/events (`status`, labels, layout names, error text, and event details).
+- Extended `tests/ipc/roundtrip.sh` with regressions for JSON escaping and low-level socket behavior (slow/incomplete command timeout and oversized command rejection).
 - External status commands now run inside a helper process, only the first line is consumed, and the helper is killed after ~200 ms if no output arrives; prefer feeding updates via `CUPIDWM_BAR_FIFO` instead of relying on long-running status scripts.
 
 ## 2026-03-16

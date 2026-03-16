@@ -21,7 +21,8 @@ built-in status rendering.
 - Built-in status modules (disk/CPU/RAM/battery/time)
 - Optional external status provider command (disabled by default; runs in a helper that times out after ~200 ms, so prefer `CUPIDWM_BAR_FIFO` pushes when possible)
 - Optional local IPC socket + `cupidwmctl` control tool (disabled by default)
-- IPC supports query/control commands, `--json` output, and `subscribe` event streaming, with each accepted client socket set nonblocking and required to send a complete newline-terminated command before the WM loop processes it
+- IPC supports query/control commands, `--json` output, and `subscribe` event streaming, with nonblocking accepted sockets staged in a pending-client queue and a short command deadline so slow writers cannot stall the WM loop
+- IPC JSON output now escapes dynamic string fields (status text, labels, event details, and errors) for robust machine parsing
 - Bar tab clicks support focus/toggle workflows (left click focus, right click toggle)
 - Supports slstatus, dmenu, other suckless software
 
@@ -65,7 +66,9 @@ Reference docs:
   - Includes a regression check for independent monitor workspace views
 - EWMH invariants suite (Xephyr): `make test-ewmh`
 - IPC roundtrip suite (Xephyr, requires an IPC-enabled build): `make test-ipc`
-   - Includes a persistence regression that verifies workspace/layout recovery after `reload`
+  - Includes persistence regression for workspace/layout recovery after `reload`
+  - Includes JSON escaping regression coverage for status payloads with quotes/backslashes
+  - Includes low-level socket regression checks for slow/incomplete and oversized commands
 - Packaging/ecosystem sanity checks: `make test-packaging`
 - Full local gate: `make check`
   - Builds sanitizer debug binary
