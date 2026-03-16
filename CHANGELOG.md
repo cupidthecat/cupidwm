@@ -43,6 +43,10 @@
 - Made default autostart cursor setup resilient when `xsetroot` is not installed.
 - Added `xsetroot` packages to CI and dependency installer smoke-tool sets.
 - Added explicit workspace-state waits in smoke tests before scratchpad assertions to reduce CI timing races.
+- Made smoke xterm discovery PID-first (with title fallback) to avoid CI flakiness from rapid window-title changes.
+- Added `failure.log` emission in smoke artifacts so CI failures include the exact assertion message.
+- Made EWMH invariants xterm discovery PID-first (with title fallback) to reduce early window-detection flakes.
+- Added `failure.log` emission for EWMH assertions to surface the exact failing check in CI artifacts.
 
 ## 2026-03-15
 
