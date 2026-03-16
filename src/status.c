@@ -283,6 +283,31 @@ static Bool status_append_named_segment(char *dest, size_t destsz, const char *s
 	return True;
 }
 
+static Bool run_external_status_command(char *dest, size_t destsz)
+{
+	if (!dest || destsz == 0 || !user_config.status_external_cmd || !user_config.status_external_cmd[0])
+		return False;
+
+	FILE *pipe = popen(user_config.status_external_cmd, "r");
+	if (!pipe)
+		return False;
+
+	dest[0] = '\0';
+	if (fgets(dest, (int)destsz, pipe)) {
+		size_t n = strlen(dest);
+		while (n > 0 && (dest[n - 1] == '\n' || dest[n - 1] == '\r')) {
+			dest[n - 1] = '\0';
+			n--;
+		}
+	}
+
+	int rc = pclose(pipe);
+	if (rc == -1)
+		return False;
+
+	return dest[0] != '\0';
+}
+
 void updatestatus(void)
 {
 	char *name = NULL;
@@ -293,6 +318,9 @@ void updatestatus(void)
 		stext[sizeof(stext) - 1] = '\0';
 		XFree(name);
 	}
+
+	if (stext[0] == '\0' && user_config.status_allow_external_cmd)
+		run_external_status_command(stext, sizeof(stext));
 
 	if (stext[0] == '\0' && user_config.status_enable_fallback) {
 		struct statvfs vfs;

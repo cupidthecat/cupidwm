@@ -213,6 +213,8 @@ grep -q "_NET_SUPPORTING_WM_CHECK" "${LOG_DIR}/root-props.log" || fail "EWMH roo
 
 xprop -root _NET_CLIENT_LIST >"${LOG_DIR}/client-list-init.log" 2>&1 || true
 grep -q "_NET_CLIENT_LIST" "${LOG_DIR}/client-list-init.log" || fail "_NET_CLIENT_LIST missing"
+xprop -root _NET_CLIENT_LIST_STACKING >"${LOG_DIR}/client-list-stacking-init.log" 2>&1 || true
+grep -q "_NET_CLIENT_LIST_STACKING" "${LOG_DIR}/client-list-stacking-init.log" || fail "_NET_CLIENT_LIST_STACKING missing"
 
 spawn_xterm "ws-a" -title "ws-a" -class st -geometry 80x24+50+50
 wid_a="$(wait_visible_window_by_name '^ws-a$' || true)"
@@ -233,6 +235,14 @@ send_key "super+3"
 wait_visible_id "${wid_a}" >/dev/null || fail "moved window not visible on workspace 3"
 send_key "super+1"
 
+xdotool windowunmap "${wid_a}" >/dev/null 2>&1 || fail "failed to unmap off-workspace window"
+sleep 0.25
+send_key "super+3"
+wait_invisible_id "${wid_a}" || fail "off-workspace unmap state was lost on workspace switch"
+xdotool windowmap "${wid_a}" >/dev/null 2>&1 || fail "failed to remap off-workspace window"
+wait_visible_id "${wid_a}" >/dev/null || fail "remapped off-workspace window did not become visible"
+send_key "super+1"
+
 spawn_xterm "scratch" -title "scratch-one" -class st -geometry 80x24+180+80
 wid_sp="$(wait_visible_window_by_name '^scratch-one$' || true)"
 [ -n "${wid_sp}" ] || fail "scratchpad test window did not appear"
@@ -241,6 +251,19 @@ send_key "super+alt+1"
 wait_invisible_id "${wid_sp}" || fail "scratchpad create/hide failed"
 send_key "super+ctrl+1"
 wait_visible_id "${wid_sp}" >/dev/null || fail "scratchpad toggle restore failed"
+
+spawn_xterm "scratch-replace" -title "scratch-two" -class st -geometry 80x24+220+120
+wid_sp2="$(wait_visible_window_by_name '^scratch-two$' || true)"
+[ -n "${wid_sp2}" ] || fail "scratchpad replacement window did not appear"
+focus_window "${wid_sp2}"
+send_key "super+alt+1"
+wait_invisible_id "${wid_sp2}" || fail "replacement scratchpad client was not hidden"
+wait_visible_id "${wid_sp}" >/dev/null || fail "previous scratchpad client did not remap after slot replacement"
+focus_window "${wid_sp}"
+send_key "super+alt+2"
+wait_invisible_id "${wid_sp}" || fail "remapped scratchpad client was not interactable"
+send_key "super+ctrl+2"
+wait_visible_id "${wid_sp}" >/dev/null || fail "scratchpad interactability regression after slot replacement"
 
 send_key "super+1"
 spawn_xterm "swallower" -title "swallower" -class st -geometry 80x24+300+130
@@ -291,6 +314,8 @@ fi
 
 xprop -root _NET_CLIENT_LIST >"${LOG_DIR}/client-list-final.log" 2>&1 || true
 grep -q "_NET_CLIENT_LIST" "${LOG_DIR}/client-list-final.log" || fail "_NET_CLIENT_LIST missing at end of smoke run"
+xprop -root _NET_CLIENT_LIST_STACKING >"${LOG_DIR}/client-list-stacking-final.log" 2>&1 || true
+grep -q "_NET_CLIENT_LIST_STACKING" "${LOG_DIR}/client-list-stacking-final.log" || fail "_NET_CLIENT_LIST_STACKING missing at end of smoke run"
 
 wm_alive
 

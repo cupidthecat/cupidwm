@@ -129,6 +129,7 @@ typedef struct Client {
 	Bool floating_saved;
 	Bool fullscreen;
 	Bool mapped;
+	int ignore_unmap_events;
 	pid_t pid;
 	struct Client *next;
 	struct Client *swallowed;
@@ -185,6 +186,10 @@ typedef struct {
 	const char *status_section_order;
 	const char *status_time_format;
 	const char *status_separator;
+	Bool status_allow_external_cmd;
+	const char *status_external_cmd;
+	Bool ipc_enable;
+	const char *ipc_socket_path;
 	int n_binds;
 	Binding binds[MAX_ITEMS];
 	char **should_float[MAX_ITEMS];
@@ -227,6 +232,7 @@ typedef enum {
 	ATOM_UTF8_STRING,
 	ATOM_NET_WM_DESKTOP,
 	ATOM_NET_CLIENT_LIST,
+	ATOM_NET_CLIENT_LIST_STACKING,
 	ATOM_NET_FRAME_EXTENTS,
 	ATOM_NET_NUMBER_OF_DESKTOPS,
 	ATOM_NET_DESKTOP_NAMES,

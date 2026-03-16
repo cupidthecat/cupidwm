@@ -19,6 +19,10 @@
 
 #include <errno.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 
 #include <X11/keysym.h>
 #include <X11/X.h>
@@ -26,6 +30,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xproto.h>
 #include <X11/Xutil.h>
+#include <X11/XKBlib.h>
 
 #include <fontconfig/fontconfig.h>
 #include <X11/Xft/Xft.h>
@@ -74,6 +79,7 @@ void init_defaults(void);
 Bool is_child_proc(pid_t pid1, pid_t pid2);
 void move_master_next(void);
 void move_master_prev(void);
+void move_client_to_workspace(Client *moved, int ws, Bool focus_target);
 void move_next_mon(void);
 void move_prev_mon(void);
 void move_to_workspace(int ws);
@@ -129,9 +135,14 @@ void update_struts(void);
 void update_workarea(void);
 void warp_cursor(Client *c);
 Bool window_has_ewmh_state(Window w, Atom state);
+Bool window_is_dock(Window w);
 void window_set_ewmh_state(Window w, Atom state, Bool add);
 Bool window_should_float(Window w);
 Bool window_should_start_fullscreen(Window w);
+void ipc_cleanup(void);
+int ipc_get_server_fd(void);
+void ipc_handle_connection(void);
+int ipc_setup(void);
 int xerr(Display *d, XErrorEvent *ee);
 void xev_case(XEvent *xev);
 
@@ -210,6 +221,7 @@ static const char *atom_names[ATOM_COUNT] = {
 	[ATOM_UTF8_STRING]                   = "UTF8_STRING",
 	[ATOM_NET_WM_DESKTOP]                = "_NET_WM_DESKTOP",
 	[ATOM_NET_CLIENT_LIST]               = "_NET_CLIENT_LIST",
+	[ATOM_NET_CLIENT_LIST_STACKING]      = "_NET_CLIENT_LIST_STACKING",
 	[ATOM_NET_FRAME_EXTENTS]             = "_NET_FRAME_EXTENTS",
 	[ATOM_NET_NUMBER_OF_DESKTOPS]        = "_NET_NUMBER_OF_DESKTOPS",
 	[ATOM_NET_DESKTOP_NAMES]             = "_NET_DESKTOP_NAMES",
@@ -432,6 +444,7 @@ Client *add_client(Window w, int ws)
 	c->floating_saved = False;
 	c->fullscreen = False;
 	c->mapped = True;
+	c->ignore_unmap_events = 0;
 	c->custom_stack_height = 0;
 
 	if (global_floating)
@@ -526,6 +539,19 @@ void centre_window(void)
 	XMoveWindow(dpy, focused->win, x, y);
 }
 
+static Bool is_scratchpad_client(const Client *c)
+{
+	if (!c)
+		return False;
+
+	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
+		if (scratchpads[i].client == c)
+			return True;
+	}
+
+	return False;
+}
+
 void change_workspace(int ws)
 {
 	if (ws < 0 || ws >= NUM_WORKSPACES || ws == current_ws)
@@ -542,39 +568,25 @@ void change_workspace(int ws)
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
 		if (scratchpads[i].client && scratchpads[i].enabled) {
 			visible_scratchpads[i] = True;
+			scratchpads[i].client->ignore_unmap_events += 2;
 			XUnmapWindow(dpy, scratchpads[i].client->win);
 			scratchpads[i].client->mapped = False;
 		}
 	}
 
-	for (Client *c = workspaces[current_ws]; c; c = c->next) {
-		if (c->mapped) {
-			/* TODO: Turn into helper */
-			Bool is_scratchpad = False;
-			for (int i = 0; i < MAX_SCRATCHPADS; i++) {
-				if (scratchpads[i].client == c) {
-					is_scratchpad = True;
-					break;
-				}
-			}
-			if (!is_scratchpad)
-				XUnmapWindow(dpy, c->win);
-		}
+	previous_workspace = current_ws;
+
+	for (Client *c = workspaces[previous_workspace]; c; c = c->next) {
+		if (!c->mapped || is_scratchpad_client(c))
+			continue;
+		c->ignore_unmap_events++;
+		XUnmapWindow(dpy, c->win);
 	}
 
-	previous_workspace = current_ws;
 	current_ws = ws;
 	for (Client *c = workspaces[current_ws]; c; c = c->next) {
 		if (c->mapped) {
-			/* TODO: Turn into helper */
-			Bool is_scratchpad = False;
-			for (int i = 0; i < MAX_SCRATCHPADS; i++) {
-				if (scratchpads[i].client == c) {
-					is_scratchpad = True;
-					break;
-				}
-			}
-			if (!is_scratchpad)
+			if (!is_scratchpad_client(c))
 				XMapWindow(dpy, c->win);
 		}
 	}
@@ -1188,10 +1200,88 @@ void grab_keys(void)
 	}
 }
 
+void move_client_to_workspace(Client *moved, int ws, Bool focus_target)
+{
+	if (!moved || ws < 0 || ws >= NUM_WORKSPACES || moved->ws == ws)
+		return;
+
+	int from_ws = moved->ws;
+	Bool from_current = (from_ws == current_ws);
+	Bool to_current = (ws == current_ws);
+	Bool was_focused = (focused == moved);
+
+	if (from_current && moved->mapped) {
+		moved->ignore_unmap_events += 2;
+		XUnmapWindow(dpy, moved->win);
+		moved->mapped = True;
+	}
+
+	Client **pp = &workspaces[from_ws];
+	while (*pp && *pp != moved)
+		pp = &(*pp)->next;
+
+	if (!*pp)
+		return;
+
+	*pp = moved->next;
+
+	moved->next = workspaces[ws];
+	workspaces[ws] = moved;
+	moved->ws = ws;
+
+	long desktop = ws;
+	XChangeProperty(dpy, moved->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
+		        PropModeReplace, (unsigned char *)&desktop, 1);
+
+	if (from_ws >= 0 && from_ws < NUM_WORKSPACES && ws_focused[from_ws] == moved)
+		ws_focused[from_ws] = NULL;
+	ws_focused[ws] = moved;
+
+	if (to_current) {
+		if (!moved->mapped) {
+			XMapWindow(dpy, moved->win);
+			moved->mapped = True;
+		}
+		if (focus_target)
+			set_input_focus(moved, True, True);
+	}
+
+	update_net_client_list();
+
+	if (from_current) {
+		tile();
+		if (was_focused || !focused || focused->ws != current_ws || !focused->mapped) {
+			Client *next_focus = NULL;
+			for (Client *c = workspaces[current_ws]; c; c = c->next) {
+				if (!c->mapped)
+					continue;
+				if (c->mon == current_mon) {
+					next_focus = c;
+					break;
+				}
+				if (!next_focus)
+					next_focus = c;
+			}
+			set_input_focus(next_focus, True, False);
+		}
+		else {
+			update_borders();
+		}
+		return;
+	}
+
+	if (to_current) {
+		tile();
+		if (!focus_target)
+			update_borders();
+	}
+}
+
 #include "status.c"
 #include "bar.c"
 
 #include "input.c"
+#include "ipc.c"
 
 void inc_gaps(void)
 {
@@ -1241,6 +1331,10 @@ void init_defaults(void)
 	user_config.status_section_order = status_section_order;
 	user_config.status_time_format = status_time_format;
 	user_config.status_separator = status_separator;
+	user_config.status_allow_external_cmd = status_allow_external_cmd ? True : False;
+	user_config.status_external_cmd = status_external_cmd;
+	user_config.ipc_enable = ipc_enable ? True : False;
+	user_config.ipc_socket_path = ipc_socket_path;
 
 	for (int i = 0; i < MAX_MONITORS; i++)
 		user_config.master_width[i] = master_width_default;
@@ -1455,40 +1549,35 @@ void move_prev_mon(void)
 
 void move_to_workspace(int ws)
 {
-	if (!focused || ws < 0 || ws >= NUM_WORKSPACES || ws == current_ws)
+	if (ws < 0 || ws >= NUM_WORKSPACES || ws == current_ws)
 		return;
 
 	Client *moved = focused;
-	int from_ws = current_ws;
+	if (!moved || moved->ws != current_ws || !moved->mapped) {
+		Client *candidate = ws_focused[current_ws];
+		if (candidate && candidate->ws == current_ws && candidate->mapped)
+			moved = candidate;
+		else
+			moved = NULL;
 
-	XUnmapWindow(dpy, moved->win);
+		if (!moved) {
+			for (Client *c = workspaces[current_ws]; c; c = c->next) {
+				if (!c->mapped)
+					continue;
+				if (c->mon == current_mon) {
+					moved = c;
+					break;
+				}
+				if (!moved)
+					moved = c;
+			}
+		}
+	}
 
-	/* remove from current list */
-	Client **pp = &workspaces[from_ws];
-	while (*pp && *pp != moved)
-		pp = &(*pp)->next;
+	if (!moved)
+		return;
 
-	if (*pp)
-		*pp = moved->next;
-
-	/* push to target list */
-	moved->next = workspaces[ws];
-	workspaces[ws] = moved;
-	moved->ws = ws;
-	long desktop = ws;
-	XChangeProperty(dpy, moved->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
-		        PropModeReplace, (unsigned char *)&desktop, 1);
-
-	/* remember it as last-focused for the target workspace */
-	ws_focused[ws] = moved;
-
-	/* retile current workspace and pick a new focus there */
-	tile();
-	focused = workspaces[from_ws];
-	if (focused)
-		set_input_focus(focused, False, False);
-	else
-		set_input_focus(NULL, False, False);
+	move_client_to_workspace(moved, ws, False);
 }
 
 void move_win_down(void)
@@ -1578,6 +1667,7 @@ void quit(void)
 	*/
 
 	XSync(dpy, False);
+	ipc_cleanup();
 	XFreeCursor(dpy, cursor_move);
 	XFreeCursor(dpy, cursor_normal);
 	XFreeCursor(dpy, cursor_resize);
@@ -1739,6 +1829,7 @@ void run(void)
 	XEvent xev;
 	time_t last_status_tick = 0;
 	int xfd = ConnectionNumber(dpy);
+	ipc_setup();
 
 	while (running) {
 		long timeout_ms = -1;
@@ -1759,35 +1850,51 @@ void run(void)
 			timeout_ms = (timeout_ms < 0) ? focus_poll_ms : MIN(timeout_ms, focus_poll_ms);
 		}
 
-		if (timeout_ms < 0) {
-			XNextEvent(dpy, &xev);
-			xev_case(&xev);
+		if (XPending(dpy)) {
 			while (XPending(dpy)) {
 				XNextEvent(dpy, &xev);
 				xev_case(&xev);
 			}
-		}
-		else {
+		} else {
 			fd_set fds;
 			FD_ZERO(&fds);
 			FD_SET(xfd, &fds);
+			int maxfd = xfd;
+
+			int ipcfd = ipc_get_server_fd();
+			if (ipcfd >= 0) {
+				FD_SET(ipcfd, &fds);
+				maxfd = MAX(maxfd, ipcfd);
+			}
 
 			struct timeval tv;
-			tv.tv_sec = timeout_ms / 1000;
-			tv.tv_usec = (timeout_ms % 1000) * 1000;
+			struct timeval *tvp = NULL;
+			if (timeout_ms >= 0) {
+				tv.tv_sec = timeout_ms / 1000;
+				tv.tv_usec = (timeout_ms % 1000) * 1000;
+				tvp = &tv;
+			}
 
 			int selret;
 			do {
-				selret = select(xfd + 1, &fds, NULL, NULL, &tv);
+				selret = select(maxfd + 1, &fds, NULL, NULL, tvp);
 			} while (selret < 0 && errno == EINTR);
 
-			if (selret > 0 && FD_ISSET(xfd, &fds)) {
-				while (XPending(dpy)) {
-					XNextEvent(dpy, &xev);
-					xev_case(&xev);
+			if (selret > 0) {
+				if (ipcfd >= 0 && FD_ISSET(ipcfd, &fds))
+					ipc_handle_connection();
+
+				if (FD_ISSET(xfd, &fds)) {
+					while (XPending(dpy)) {
+						XNextEvent(dpy, &xev);
+						xev_case(&xev);
+					}
 				}
 			}
 		}
+
+		if (!running)
+			break;
 
 		if (user_config.focus_follows_mouse && drag_mode == DRAG_NONE && !in_ws_switch) {
 			Window root_ret, child_ret;
@@ -1813,6 +1920,8 @@ void run(void)
 			drawbars();
 		}
 	}
+
+	ipc_cleanup();
 }
 
 void scan_existing_windows(void)
@@ -1986,14 +2095,37 @@ void set_win_scratchpad(int n)
 		return;
 
 	Client *pad_client = focused;
-	if (scratchpads[n].client != NULL) {
-		XMapWindow(dpy, scratchpads[n].client->win);
-		scratchpads[n].enabled = False;
-		scratchpads[n].client = NULL;
+	Client *previous = scratchpads[n].client;
+
+	if (previous && previous != pad_client) {
+		XMapWindow(dpy, previous->win);
+		previous->mapped = True;
 	}
-	scratchpads[n].client = pad_client;
-	XUnmapWindow(dpy, scratchpads[n].client->win);
+
 	scratchpads[n].enabled = False;
+	scratchpads[n].client = pad_client;
+
+	XUnmapWindow(dpy, scratchpads[n].client->win);
+	scratchpads[n].client->mapped = False;
+
+	if (focused == pad_client) {
+		Client *next_focus = NULL;
+		for (Client *c = workspaces[current_ws]; c; c = c->next) {
+			if (!c->mapped || c == pad_client)
+				continue;
+			if (c->mon == current_mon) {
+				next_focus = c;
+				break;
+			}
+			if (!next_focus)
+				next_focus = c;
+		}
+		set_input_focus(next_focus, True, False);
+	}
+
+	update_net_client_list();
+	tile();
+	update_borders();
 }
 
 void reset_opacity(Window w)

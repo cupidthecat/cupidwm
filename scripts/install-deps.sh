@@ -188,3 +188,5 @@ fedora)
 esac
 
 echo "Dependency installation complete."
+echo "Security note: keep your distro's libX11 packages up to date."
+echo "Known advisories reviewed for this project include CVE-2025-26597 and CVE-2020-14363."
