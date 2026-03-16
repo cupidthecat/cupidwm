@@ -20,6 +20,7 @@ LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cupidwm-ewmh.XXXXXX")"
 MSG_TOOL="${LOG_DIR}/send-client-message"
 xephyr_pid=""
 wm_pid=""
+last_spawn_pid=""
 declare -a app_pids=()
 
 cleanup() {
@@ -74,6 +75,23 @@ wait_visible_window_by_name() {
 	return 1
 }
 
+wait_visible_window_by_pid() {
+	local pid="$1"
+	local wid=""
+	for _ in $(seq 1 120); do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			return 1
+		fi
+		wid="$(xdotool search --onlyvisible --pid "$pid" 2>/dev/null | head -n1 || true)"
+		if [ -n "$wid" ]; then
+			echo "$wid"
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
 wait_window_gone() {
 	local wid="$1"
 	for _ in $(seq 1 80); do
@@ -97,6 +115,14 @@ wait_window_map_state() {
 		sleep 0.1
 	done
 	return 1
+}
+
+spawn_xterm() {
+	local tag="$1"
+	shift
+	xterm "$@" >"${LOG_DIR}/xterm-${tag}.log" 2>&1 &
+	last_spawn_pid="$!"
+	app_pids+=("$last_spawn_pid")
 }
 
 choose_test_display || fail "could not find free test display"
@@ -123,14 +149,14 @@ assert_int_eq "$num_desktops" "9" "_NET_NUMBER_OF_DESKTOPS mismatch"
 cur_ws="$(root_prop_int _NET_CURRENT_DESKTOP)"
 assert_int_eq "$cur_ws" "0" "initial current desktop should be 0"
 
-xterm -title "ewmh-a" -class st -geometry 80x24+60+60 >"${LOG_DIR}/xterm-a.log" 2>&1 &
-app_pids+=("$!")
-wid_a="$(wait_visible_window_by_name '^ewmh-a$' || true)"
+spawn_xterm "a" -title "ewmh-a" -class st -geometry 80x24+60+60
+pid_a="$last_spawn_pid"
+wid_a="$(wait_visible_window_by_pid "$pid_a" || wait_visible_window_by_name '^ewmh-a$' || true)"
 [ -n "$wid_a" ] || fail "failed to open first test window"
 
-xterm -title "ewmh-b" -class st -geometry 80x24+280+60 >"${LOG_DIR}/xterm-b.log" 2>&1 &
-app_pids+=("$!")
-wid_b="$(wait_visible_window_by_name '^ewmh-b$' || true)"
+spawn_xterm "b" -title "ewmh-b" -class st -geometry 80x24+280+60
+pid_b="$last_spawn_pid"
+wid_b="$(wait_visible_window_by_pid "$pid_b" || wait_visible_window_by_name '^ewmh-b$' || true)"
 [ -n "$wid_b" ] || fail "failed to open second test window"
 
 # client lists should include both windows
@@ -185,9 +211,9 @@ workarea_after="$(xprop -root _NET_WORKAREA 2>/dev/null | sed -n 's/.*= //p' | h
 [ "$workarea_before" != "$workarea_after" ] || fail "_NET_WORKAREA did not change after dock strut update"
 
 # _NET_WM_STATE modal add/remove handling
-xterm -title "ewmh-modal" -class st -geometry 80x24+500+100 >"${LOG_DIR}/xterm-modal.log" 2>&1 &
-app_pids+=("$!")
-wid_modal="$(wait_visible_window_by_name '^ewmh-modal$' || true)"
+spawn_xterm "modal" -title "ewmh-modal" -class st -geometry 80x24+500+100
+pid_modal="$last_spawn_pid"
+wid_modal="$(wait_visible_window_by_pid "$pid_modal" || wait_visible_window_by_name '^ewmh-modal$' || true)"
 [ -n "$wid_modal" ] || fail "failed to open modal test window"
 
 "${MSG_TOOL}" "$wid_modal" _NET_WM_STATE 1 _NET_WM_STATE_MODAL 0 1 || fail "failed to send modal-add client message"
@@ -199,9 +225,9 @@ sleep 0.3
 assert_prop_not_contains "$wid_modal" _NET_WM_STATE _NET_WM_STATE_MODAL
 
 # additional _NET_WM_STATE coverage: maximize
-xterm -title "ewmh-max" -class st -geometry 80x24+540+140 >"${LOG_DIR}/xterm-max.log" 2>&1 &
-app_pids+=("$!")
-wid_max="$(wait_visible_window_by_name '^ewmh-max$' || true)"
+spawn_xterm "max" -title "ewmh-max" -class st -geometry 80x24+540+140
+pid_max="$last_spawn_pid"
+wid_max="$(wait_visible_window_by_pid "$pid_max" || wait_visible_window_by_name '^ewmh-max$' || true)"
 [ -n "$wid_max" ] || fail "failed to open maximize test window"
 
 "${MSG_TOOL}" "$wid_max" _NET_WM_STATE 1 _NET_WM_STATE_MAXIMIZED_HORZ _NET_WM_STATE_MAXIMIZED_VERT 1 || fail "failed to send maximize-add client message"
@@ -215,9 +241,9 @@ assert_prop_not_contains "$wid_max" _NET_WM_STATE _NET_WM_STATE_MAXIMIZED_HORZ
 assert_prop_not_contains "$wid_max" _NET_WM_STATE _NET_WM_STATE_MAXIMIZED_VERT
 
 # additional _NET_WM_STATE coverage: hidden
-xterm -title "ewmh-hidden" -class st -geometry 80x24+700+160 >"${LOG_DIR}/xterm-hidden.log" 2>&1 &
-app_pids+=("$!")
-wid_hidden="$(wait_visible_window_by_name '^ewmh-hidden$' || true)"
+spawn_xterm "hidden" -title "ewmh-hidden" -class st -geometry 80x24+700+160
+pid_hidden="$last_spawn_pid"
+wid_hidden="$(wait_visible_window_by_pid "$pid_hidden" || wait_visible_window_by_name '^ewmh-hidden$' || true)"
 [ -n "$wid_hidden" ] || fail "failed to open hidden-state test window"
 
 "${MSG_TOOL}" "$wid_hidden" _NET_WM_STATE 1 _NET_WM_STATE_HIDDEN 0 1 || fail "failed to send hidden-add client message"
@@ -239,9 +265,9 @@ sleep 0.2
 assert_prop_not_contains "$wid_modal" _NET_WM_STATE _NET_WM_STATE_SKIP_TASKBAR
 
 # _NET_WM_DESKTOP all-desktops request should sync sticky state
-xterm -title "ewmh-sticky" -class st -geometry 80x24+760+180 >"${LOG_DIR}/xterm-sticky.log" 2>&1 &
-app_pids+=("$!")
-wid_sticky="$(wait_visible_window_by_name '^ewmh-sticky$' || true)"
+spawn_xterm "sticky" -title "ewmh-sticky" -class st -geometry 80x24+760+180
+pid_sticky="$last_spawn_pid"
+wid_sticky="$(wait_visible_window_by_pid "$pid_sticky" || wait_visible_window_by_name '^ewmh-sticky$' || true)"
 [ -n "$wid_sticky" ] || fail "failed to open sticky-state test window"
 
 "${MSG_TOOL}" "$wid_sticky" _NET_WM_DESKTOP 0xffffffff 0 0 1 || fail "failed to send _NET_WM_DESKTOP all-desktops request"
@@ -253,9 +279,9 @@ sleep 0.3
 assert_prop_not_contains "$wid_sticky" _NET_WM_STATE _NET_WM_STATE_STICKY
 
 # _NET_CLOSE_WINDOW handling
-xterm -title "ewmh-close" -class st -geometry 80x24+620+120 >"${LOG_DIR}/xterm-close.log" 2>&1 &
-app_pids+=("$!")
-wid_close="$(wait_visible_window_by_name '^ewmh-close$' || true)"
+spawn_xterm "close" -title "ewmh-close" -class st -geometry 80x24+620+120
+pid_close="$last_spawn_pid"
+wid_close="$(wait_visible_window_by_pid "$pid_close" || wait_visible_window_by_name '^ewmh-close$' || true)"
 [ -n "$wid_close" ] || fail "failed to open close-window test window"
 
 "${MSG_TOOL}" "$wid_close" _NET_CLOSE_WINDOW 0 0 0 0 0 || fail "failed to send _NET_CLOSE_WINDOW"

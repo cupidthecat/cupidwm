@@ -2,6 +2,9 @@
 set -euo pipefail
 
 fail() {
+	if [ -n "${LOG_DIR:-}" ]; then
+		printf 'ewmh test failed: %s\n' "$*" >"${LOG_DIR}/failure.log" 2>/dev/null || true
+	fi
 	echo "ewmh test failed: $*" >&2
 	exit 1
 }
