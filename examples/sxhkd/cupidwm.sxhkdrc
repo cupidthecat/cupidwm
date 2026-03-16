@@ -1,0 +1,41 @@
+# Example sxhkd configuration for cupidwm
+# Copy to ~/.config/sxhkd/sxhkdrc and adjust to taste.
+
+super + Return
+	alacritty
+
+super + p
+	dmenu_run
+
+super + b
+	firefox
+
+super + {1-9}
+	cupidwmctl workspace {1-9}
+
+super + shift + {1-9}
+	cupidwmctl move-workspace {1-9}
+
+super + {h,j,k,l}
+	cupidwmctl focus {left,down,up,right}
+
+super + shift + {h,j,k,l}
+	cupidwmctl swap {left,down,up,right}
+
+super + control + {h,j,k,l}
+	cupidwmctl move {left,down,up,right}
+
+super + alt + {Left,Down,Up,Right}
+	cupidwmctl focus {monitor-left,monitor-down,monitor-up,monitor-right}
+
+super + alt + shift + {Left,Down,Up,Right}
+	cupidwmctl move-monitor {left,down,up,right}
+
+super + {t,m,f,r,y}
+	cupidwmctl layout {tile,monocle,floating,fibonacci,dwindle}
+
+super + shift + r
+	cupidwmctl reload
+
+super + shift + Escape
+	cupidwmctl quit
