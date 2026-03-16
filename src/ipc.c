@@ -7,15 +7,47 @@ static char ipc_socket_path_buf[PATH_MAX] = {0};
 static char ipc_socket_hint_path_buf[PATH_MAX] = {0};
 
 #define IPC_MAX_SUBSCRIBERS 16
+#define IPC_MAX_PENDING_CLIENTS 32
+#define IPC_CLIENT_CMD_MAX 512
+#define IPC_PENDING_TIMEOUT_MS 200
 
 typedef struct {
 	int fd;
 	Bool json;
 } IpcSubscriber;
 
+typedef struct {
+	int fd;
+	size_t used;
+	char buf[IPC_CLIENT_CMD_MAX];
+	long long deadline_ms;
+} IpcPendingClient;
+
 static IpcSubscriber ipc_subscribers[IPC_MAX_SUBSCRIBERS];
+static IpcPendingClient ipc_pending_clients[IPC_MAX_PENDING_CLIENTS];
+static Bool ipc_state_initialized = False;
 
 static void ipc_trim(char *s);
+static Bool ipc_dispatch(int client_fd, char *cmd);
+
+static void ipc_init_state_once(void)
+{
+	if (ipc_state_initialized)
+		return;
+
+	for (int i = 0; i < IPC_MAX_SUBSCRIBERS; i++) {
+		ipc_subscribers[i].fd = -1;
+		ipc_subscribers[i].json = False;
+	}
+	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++) {
+		ipc_pending_clients[i].fd = -1;
+		ipc_pending_clients[i].used = 0;
+		ipc_pending_clients[i].buf[0] = '\0';
+		ipc_pending_clients[i].deadline_ms = 0;
+	}
+
+	ipc_state_initialized = True;
+}
 
 static void ipc_display_token(char *out, size_t outsz)
 {
@@ -287,6 +319,180 @@ static void ipc_write_replyf(int fd, const char *fmt, ...)
 	ipc_write_reply(fd, out);
 }
 
+static long long ipc_now_monotonic_ms(void)
+{
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+		return (long long)time(NULL) * 1000LL;
+
+	return ((long long)ts.tv_sec * 1000LL) + ((long long)ts.tv_nsec / 1000000LL);
+}
+
+static void ipc_json_escape(char *dst, size_t dstsz, const char *src)
+{
+	static const char hex[] = "0123456789abcdef";
+	size_t j = 0;
+
+	if (!dst || dstsz == 0)
+		return;
+
+	dst[0] = '\0';
+	if (!src)
+		return;
+
+	for (size_t i = 0; src[i] && j + 1 < dstsz; i++) {
+		unsigned char ch = (unsigned char)src[i];
+		if (ch == '"' || ch == '\\') {
+			if (j + 2 >= dstsz)
+				break;
+			dst[j++] = '\\';
+			dst[j++] = (char)ch;
+			continue;
+		}
+		if (ch == '\b' || ch == '\f' || ch == '\n' || ch == '\r' || ch == '\t') {
+			if (j + 2 >= dstsz)
+				break;
+			dst[j++] = '\\';
+			if (ch == '\b')
+				dst[j++] = 'b';
+			else if (ch == '\f')
+				dst[j++] = 'f';
+			else if (ch == '\n')
+				dst[j++] = 'n';
+			else if (ch == '\r')
+				dst[j++] = 'r';
+			else
+				dst[j++] = 't';
+			continue;
+		}
+		if (ch < 0x20) {
+			if (j + 6 >= dstsz)
+				break;
+			dst[j++] = '\\';
+			dst[j++] = 'u';
+			dst[j++] = '0';
+			dst[j++] = '0';
+			dst[j++] = hex[ch >> 4];
+			dst[j++] = hex[ch & 0x0f];
+			continue;
+		}
+
+		dst[j++] = (char)ch;
+	}
+
+	dst[j] = '\0';
+}
+
+static void ipc_pending_clear_slot(int slot, Bool close_fd)
+{
+	if (slot < 0 || slot >= IPC_MAX_PENDING_CLIENTS)
+		return;
+
+	if (close_fd && ipc_pending_clients[slot].fd >= 0)
+		close(ipc_pending_clients[slot].fd);
+
+	ipc_pending_clients[slot].fd = -1;
+	ipc_pending_clients[slot].used = 0;
+	ipc_pending_clients[slot].buf[0] = '\0';
+	ipc_pending_clients[slot].deadline_ms = 0;
+}
+
+static int ipc_pending_add_client(int fd)
+{
+	if (fd < 0)
+		return -1;
+
+	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++) {
+		if (ipc_pending_clients[i].fd >= 0)
+			continue;
+		ipc_pending_clients[i].fd = fd;
+		ipc_pending_clients[i].used = 0;
+		ipc_pending_clients[i].buf[0] = '\0';
+		ipc_pending_clients[i].deadline_ms = ipc_now_monotonic_ms() + IPC_PENDING_TIMEOUT_MS;
+		return i;
+	}
+
+	return -1;
+}
+
+static void ipc_pending_service_slot(int slot, long long now_ms)
+{
+	if (slot < 0 || slot >= IPC_MAX_PENDING_CLIENTS)
+		return;
+
+	IpcPendingClient *pending = &ipc_pending_clients[slot];
+	if (pending->fd < 0)
+		return;
+
+	for (;;) {
+		if (pending->used >= sizeof(pending->buf) - 1) {
+			ipc_write_reply(pending->fd, "error command too long\n");
+			ipc_pending_clear_slot(slot, True);
+			return;
+		}
+
+		ssize_t n = read(pending->fd, pending->buf + pending->used,
+		                 sizeof(pending->buf) - 1 - pending->used);
+		if (n > 0) {
+			pending->used += (size_t)n;
+			pending->buf[pending->used] = '\0';
+			pending->deadline_ms = ipc_now_monotonic_ms() + IPC_PENDING_TIMEOUT_MS;
+
+			char *nl = memchr(pending->buf, '\n', pending->used);
+			char *cr = memchr(pending->buf, '\r', pending->used);
+			char *eol = nl;
+			if (!eol || (cr && cr < eol))
+				eol = cr;
+			if (!eol)
+				continue;
+
+			*eol = '\0';
+			ipc_trim(pending->buf);
+			if (!pending->buf[0]) {
+				ipc_write_reply(pending->fd, "error empty command\n");
+				ipc_pending_clear_slot(slot, True);
+				return;
+			}
+
+			Bool keep_open = ipc_dispatch(pending->fd, pending->buf);
+			ipc_pending_clear_slot(slot, !keep_open);
+			return;
+		}
+
+		if (n == 0) {
+			if (pending->used > 0)
+				ipc_write_reply(pending->fd, "error incomplete command\n");
+			ipc_pending_clear_slot(slot, True);
+			return;
+		}
+
+		if (errno == EINTR)
+			continue;
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			break;
+
+		ipc_write_reply(pending->fd, "error failed to read command\n");
+		ipc_pending_clear_slot(slot, True);
+		return;
+	}
+
+	if (now_ms >= pending->deadline_ms) {
+		ipc_write_reply(pending->fd, "error read timeout\n");
+		ipc_pending_clear_slot(slot, True);
+	}
+}
+
+static void ipc_pending_service_all(void)
+{
+	long long now_ms = ipc_now_monotonic_ms();
+
+	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++) {
+		if (ipc_pending_clients[i].fd < 0)
+			continue;
+		ipc_pending_service_slot(i, now_ms);
+	}
+}
+
 static int ipc_count_clients(void)
 {
 	int n = 0;
@@ -395,12 +601,17 @@ void ipc_notify_event(const char *event, const char *details)
 		if (fd < 0)
 			continue;
 
-		char line[2048];
-		if (ipc_subscribers[i].json)
+		char line[4096];
+		if (ipc_subscribers[i].json) {
+			char event_esc[512];
+			char details_esc[1536];
+			ipc_json_escape(event_esc, sizeof(event_esc), event);
+			ipc_json_escape(details_esc, sizeof(details_esc), details ? details : "");
 			snprintf(line, sizeof(line),
 			         "{\"event\":\"%s\",\"details\":\"%s\"}\n",
-			         event,
-			         details ? details : "");
+			         event_esc,
+			         details_esc);
+		}
 		else if (details && details[0])
 			snprintf(line, sizeof(line), "event %s %s\n", event, details);
 		else
@@ -464,17 +675,6 @@ static int ipc_set_cloexec(int fd)
 	return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
-static int ipc_set_recv_timeout(int fd, int timeout_ms)
-{
-	if (fd < 0 || timeout_ms < 0)
-		return -1;
-
-	struct timeval tv;
-	tv.tv_sec = timeout_ms / 1000;
-	tv.tv_usec = (timeout_ms % 1000) * 1000;
-	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-}
-
 static void ipc_reply_status(int client_fd)
 {
 	Window fw = focused ? focused->win : None;
@@ -489,12 +689,14 @@ static void ipc_reply_status(int client_fd)
 static void ipc_reply_status_json(int client_fd)
 {
 	Window fw = focused ? focused->win : None;
+	char layout_esc[256];
+	ipc_json_escape(layout_esc, sizeof(layout_esc), ipc_layout_name(current_layout));
 	ipc_write_replyf(client_fd,
 	                "{\"ok\":true,\"workspace\":%d,\"monitor\":%d,\"focused\":\"0x%lx\",\"layout\":\"%s\"}\n",
 	                current_ws + 1,
 	                current_mon,
 	                (unsigned long)fw,
-	                ipc_layout_name(current_layout));
+	                layout_esc);
 }
 
 static void ipc_reply_ok(int client_fd, Bool json)
@@ -507,8 +709,11 @@ static void ipc_reply_ok(int client_fd, Bool json)
 
 static void ipc_reply_error(int client_fd, Bool json, const char *msg)
 {
-	if (json)
-		ipc_write_replyf(client_fd, "{\"ok\":false,\"error\":\"%s\"}\n", msg ? msg : "error");
+	if (json) {
+		char msg_esc[512];
+		ipc_json_escape(msg_esc, sizeof(msg_esc), msg ? msg : "error");
+		ipc_write_replyf(client_fd, "{\"ok\":false,\"error\":\"%s\"}\n", msg_esc);
+	}
 	else
 		ipc_write_replyf(client_fd, "error %s\n", msg ? msg : "error");
 }
@@ -571,13 +776,15 @@ static void ipc_reply_query_workspaces(int client_fd, Bool json)
 			                (unsigned long)(workspace_states[ws].focused ? workspace_states[ws].focused->win : None));
 		}
 		else {
+			char layout_esc[256];
+			ipc_json_escape(layout_esc, sizeof(layout_esc), ipc_layout_name(workspace_layout_for(ws)));
 			ipc_write_replyf(client_fd,
 			                "%s{\"id\":%d,\"visible\":%s,\"clients\":%d,\"layout\":\"%s\",\"focused\":\"0x%lx\"}",
 			                ws == 0 ? "" : ",",
 			                ws + 1,
 			                visible ? "true" : "false",
 			                count,
-			                ipc_layout_name(workspace_layout_for(ws)),
+			                layout_esc,
 			                (unsigned long)(workspace_states[ws].focused ? workspace_states[ws].focused->win : None));
 		}
 	}
@@ -605,12 +812,16 @@ static void ipc_reply_query_layouts(int client_fd, Bool json)
 			                i == workspace_layout_for(current_ws) ? 1 : 0);
 		}
 		else {
+			char name_esc[256];
+			char symbol_esc[256];
+			ipc_json_escape(name_esc, sizeof(name_esc), name);
+			ipc_json_escape(symbol_esc, sizeof(symbol_esc), symbol);
 			ipc_write_replyf(client_fd,
 			                "%s{\"id\":%d,\"name\":\"%s\",\"symbol\":\"%s\",\"active\":%s}",
 			                i == 0 ? "" : ",",
 			                i,
-			                name,
-			                symbol,
+			                name_esc,
+			                symbol_esc,
 			                i == workspace_layout_for(current_ws) ? "true" : "false");
 		}
 	}
@@ -754,20 +965,24 @@ static void ipc_reply_query_bar(int client_fd, Bool json)
 		return;
 	}
 
+	char status_esc[1536];
+	ipc_json_escape(status_esc, sizeof(status_esc), stext);
 	ipc_write_replyf(client_fd,
 	                "{\"ok\":true,\"bar\":{\"show\":%s,\"override\":%s,\"status\":\"%s\",\"segments\":[",
 	                user_config.showbar ? "true" : "false",
 	                status_text_override_active() ? "true" : "false",
-	                stext);
+	                status_esc);
 
 	for (int i = 0; i < segments; i++) {
 		char label[STATUS_MAX_LABEL] = "";
+		char label_esc[256];
 		status_segment_label_at(i, label, sizeof(label));
+		ipc_json_escape(label_esc, sizeof(label_esc), label);
 		ipc_write_replyf(client_fd,
 		                "%s{\"id\":%d,\"label\":\"%s\",\"left\":%s,\"middle\":%s,\"right\":%s}",
 		                i == 0 ? "" : ",",
 		                i + 1,
-		                label,
+		                label_esc,
 		                status_action_command_get(i, Button1) ? "true" : "false",
 		                status_action_command_get(i, Button2) ? "true" : "false",
 		                status_action_command_get(i, Button3) ? "true" : "false");
@@ -777,12 +992,14 @@ static void ipc_reply_query_bar(int client_fd, Bool json)
 	for (int i = 0; i < n_mons; i++) {
 		int ws = mons[i].view_ws;
 		Client *wf = (ws >= 0 && ws < NUM_WORKSPACES) ? workspace_states[ws].focused : NULL;
+		char layout_esc[256];
+		ipc_json_escape(layout_esc, sizeof(layout_esc), ipc_layout_name(workspace_layout_for(ws)));
 		ipc_write_replyf(client_fd,
 		                "%s{\"id\":%d,\"workspace\":%d,\"layout\":\"%s\",\"focused\":\"0x%lx\",\"current\":%s}",
 		                i == 0 ? "" : ",",
 		                i,
 		                ws + 1,
-		                ipc_layout_name(workspace_layout_for(ws)),
+		                layout_esc,
 		                (unsigned long)(wf ? wf->win : None),
 		                i == current_mon ? "true" : "false");
 	}
@@ -1491,67 +1708,21 @@ void ipc_handle_connection(void)
 		if (client_fd < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				break;
-			return;
+			break;
 		}
 
 		ipc_set_cloexec(client_fd);
-		ipc_set_recv_timeout(client_fd, 200);
-
-		char buf[512];
-		size_t used = 0;
-		Bool truncated = False;
-		for (;;) {
-			if (used >= sizeof(buf) - 1) {
-				truncated = True;
-				break;
-			}
-
-			ssize_t n = read(client_fd, buf + used, sizeof(buf) - 1 - used);
-			if (n > 0) {
-				used += (size_t)n;
-				if (memchr(buf, '\n', used) || memchr(buf, '\r', used))
-					break;
-				continue;
-			}
-
-			if (n == 0)
-				break;
-
-			if (errno == EINTR)
-				continue;
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				if (used > 0)
-					break;
-				ipc_write_reply(client_fd, "error read timeout\n");
-				close(client_fd);
-				goto next_client;
-			}
-
-			ipc_write_reply(client_fd, "error failed to read command\n");
+		if (ipc_set_nonblock(client_fd) < 0) {
 			close(client_fd);
-			goto next_client;
+			continue;
 		}
-
-		if (truncated) {
-			ipc_write_reply(client_fd, "error command too long\n");
+		if (ipc_pending_add_client(client_fd) < 0) {
+			ipc_write_reply(client_fd, "error server busy\n");
 			close(client_fd);
-			goto next_client;
 		}
-
-		if (used == 0) {
-			ipc_write_reply(client_fd, "error empty command\n");
-			close(client_fd);
-			goto next_client;
-		}
-
-		buf[used] = '\0';
-		ipc_trim(buf);
-		Bool keep_open = ipc_dispatch(client_fd, buf);
-		if (!keep_open)
-			close(client_fd);
-next_client:
-		;
 	}
+
+	ipc_pending_service_all();
 }
 
 int ipc_get_server_fd(void)
@@ -1559,8 +1730,48 @@ int ipc_get_server_fd(void)
 	return ipc_server_fd;
 }
 
+void ipc_fdset_prepare(fd_set *fds, int *maxfd)
+{
+	if (!fds || !maxfd)
+		return;
+
+	if (ipc_server_fd >= 0) {
+		FD_SET(ipc_server_fd, fds);
+		if (ipc_server_fd > *maxfd)
+			*maxfd = ipc_server_fd;
+	}
+
+	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++) {
+		int fd = ipc_pending_clients[i].fd;
+		if (fd < 0)
+			continue;
+		FD_SET(fd, fds);
+		if (fd > *maxfd)
+			*maxfd = fd;
+	}
+}
+
+Bool ipc_fdset_has_ready(const fd_set *fds)
+{
+	if (!fds)
+		return False;
+
+	if (ipc_server_fd >= 0 && FD_ISSET(ipc_server_fd, fds))
+		return True;
+
+	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++) {
+		int fd = ipc_pending_clients[i].fd;
+		if (fd >= 0 && FD_ISSET(fd, fds))
+			return True;
+	}
+
+	return False;
+}
+
 void ipc_cleanup(void)
 {
+	ipc_init_state_once();
+
 	if (ipc_server_fd >= 0) {
 		close(ipc_server_fd);
 		ipc_server_fd = -1;
@@ -1573,6 +1784,9 @@ void ipc_cleanup(void)
 			ipc_subscribers[i].json = False;
 		}
 	}
+
+	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++)
+		ipc_pending_clear_slot(i, True);
 
 	if (ipc_socket_path_buf[0]) {
 		ipc_publish_socket_path(NULL);
@@ -1588,6 +1802,8 @@ void ipc_cleanup(void)
 
 int ipc_setup(void)
 {
+	ipc_init_state_once();
+
 	if (!user_config.ipc_enable)
 		return -1;
 	if (ipc_server_fd >= 0)
@@ -1597,6 +1813,8 @@ int ipc_setup(void)
 		ipc_subscribers[i].fd = -1;
 		ipc_subscribers[i].json = False;
 	}
+	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++)
+		ipc_pending_clear_slot(i, False);
 
 	char socket_path[PATH_MAX] = {0};
 	if (!ipc_resolve_socket_path(user_config.ipc_socket_path, socket_path, sizeof(socket_path)))

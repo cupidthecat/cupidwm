@@ -55,6 +55,15 @@ Install dependencies and re-run:
 make check
 ```
 
+If Xephyr fails with listener errors (for example `_XSERVTrans... failed to bind listener`),
+check `/tmp/.X11-unix` permissions:
+
+```sh
+ls -ld /tmp/.X11-unix
+```
+
+It should normally be mode `1777` on Linux hosts.
+
 ## Capturing crash diagnostics
 
 Build sanitizer binary and run the test gate:

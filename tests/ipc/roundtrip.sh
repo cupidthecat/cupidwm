@@ -134,6 +134,48 @@ kill -0 "$wm_pid" 2>/dev/null || fail "window manager exited early"
 wait_socket "$expected_socket" || fail "socket was not created at $expected_socket"
 wait_root_prop_contains _CUPIDWM_IPC_SOCKET "$expected_socket" || fail "root property did not publish active socket path"
 
+if command -v python3 >/dev/null 2>&1; then
+	partial_timeout_out="$(
+		SOCK_PATH="$expected_socket" python3 - <<'PY'
+import os
+import socket
+import time
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(2.0)
+sock.connect(os.environ["SOCK_PATH"])
+sock.sendall(b"status")
+time.sleep(0.6)
+try:
+    data = sock.recv(4096)
+except socket.timeout:
+    data = b"timeout"
+sock.close()
+print(data.decode("utf-8", "replace"), end="")
+PY
+	)"
+	echo "$partial_timeout_out" | grep -Fq 'error read timeout' || fail "partial newline-free command did not time out"
+
+	oversize_out="$(
+		SOCK_PATH="$expected_socket" python3 - <<'PY'
+import os
+import socket
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(2.0)
+sock.connect(os.environ["SOCK_PATH"])
+sock.sendall((b"x" * 800) + b"\n")
+try:
+    data = sock.recv(4096)
+except socket.timeout:
+    data = b"timeout"
+sock.close()
+print(data.decode("utf-8", "replace"), end="")
+PY
+	)"
+	echo "$oversize_out" | grep -Fq 'error command too long' || fail "oversized command was not rejected"
+fi
+
 ping_out="$(wait_ctl_reply '^ok pong$' ping || true)"
 [ -n "$ping_out" ] || fail "cupidwmctl ping did not succeed"
 
@@ -147,6 +189,17 @@ bar_set_out="$(wait_ctl_reply '^ok$' 'bar status set IPC-Status-Test' || true)"
 bar_query_out="$(wait_ctl_reply '^ok show=' 'query bar' || true)"
 [ -n "$bar_query_out" ] || fail "query bar did not succeed"
 echo "$bar_query_out" | grep -Fq 'status text=IPC-Status-Test' || fail "query bar did not include pushed status text"
+
+special_status='Q "A" \ B'
+bar_set_special_out="$(wait_ctl_reply '^ok$' bar status set "$special_status" || true)"
+[ -n "$bar_set_special_out" ] || fail "bar status set with special characters did not succeed"
+
+bar_query_json_out="$(wait_ctl_reply '^\{\"ok\":true,\"bar\":\{' --json query bar || true)"
+[ -n "$bar_query_json_out" ] || fail "JSON query bar did not succeed"
+echo "$bar_query_json_out" | grep -Fq '"status":"Q \"A\" \\ B"' || fail "JSON status text was not escaped correctly"
+
+bar_restore_out="$(wait_ctl_reply '^ok$' 'bar status set IPC-Status-Test' || true)"
+[ -n "$bar_restore_out" ] || fail "bar status restore did not succeed"
 
 click_marker="${LOG_DIR}/status-click.marker"
 rm -f "$click_marker"

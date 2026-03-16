@@ -95,6 +95,7 @@ Query commands:
 - `query layouts`
 - `query focused-client`
 - `query clients`
+- `query bar`
 
 Control commands:
 
@@ -121,6 +122,10 @@ Pass `--json` to `cupidwmctl` to request machine-readable replies:
 cupidwmctl --json status
 cupidwmctl --json query clients
 ```
+
+JSON replies escape dynamic string fields (status text, labels, layout names,
+event details, and error messages), so payloads remain valid when values
+contain quotes, backslashes, or control characters.
 
 ## Event Stream
 
@@ -165,4 +170,7 @@ For built-in bar tabs (outside IPC), default mouse behavior is:
 - Use this only on trusted local sessions.
 - Prefer paths under `$XDG_RUNTIME_DIR` and avoid world-accessible directories.
 - The `/tmp` fallback refuses directories or socket paths it does not own.
-- IPC read handling uses a short socket receive timeout to avoid event-loop stalls from hung clients.
+- Each accepted client socket is marked nonblocking and staged in a pending-client queue.
+- A complete newline-terminated command must arrive within a short deadline (~200 ms),
+  otherwise the server responds with `error read timeout` and closes that client.
+- Oversized commands return `error command too long`.

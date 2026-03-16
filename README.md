@@ -19,9 +19,10 @@ built-in status rendering.
 - EWMH support for desktop state, active window, client list, stacking list, workarea, and expanded `_NET_WM_STATE` handling
 - EWMH edge-case support for `_NET_MOVERESIZE_WINDOW`, `_NET_REQUEST_FRAME_EXTENTS`, `_NET_WM_ALLOWED_ACTIONS`, urgency sync, and explicit restack requests
 - Built-in status modules (disk/CPU/RAM/battery/time)
-- Optional external status provider command (disabled by default)
+- Optional external status provider command (disabled by default; runs in a helper that times out after ~200 ms, so prefer `CUPIDWM_BAR_FIFO` pushes when possible)
 - Optional local IPC socket + `cupidwmctl` control tool (disabled by default)
-- IPC supports query/control commands, `--json` output, and `subscribe` event streaming
+- IPC supports query/control commands, `--json` output, and `subscribe` event streaming, with nonblocking accepted sockets staged in a pending-client queue and a short command deadline so slow writers cannot stall the WM loop
+- IPC JSON output now escapes dynamic string fields (status text, labels, event details, and errors) for robust machine parsing
 - Bar tab clicks support focus/toggle workflows (left click focus, right click toggle)
 - Supports slstatus, dmenu, other suckless software
 
@@ -65,7 +66,9 @@ Reference docs:
   - Includes a regression check for independent monitor workspace views
 - EWMH invariants suite (Xephyr): `make test-ewmh`
 - IPC roundtrip suite (Xephyr, requires an IPC-enabled build): `make test-ipc`
-   - Includes a persistence regression that verifies workspace/layout recovery after `reload`
+  - Includes persistence regression for workspace/layout recovery after `reload`
+  - Includes JSON escaping regression coverage for status payloads with quotes/backslashes
+  - Includes low-level socket regression checks for slow/incomplete and oversized commands
 - Packaging/ecosystem sanity checks: `make test-packaging`
 - Full local gate: `make check`
   - Builds sanitizer debug binary
@@ -87,6 +90,7 @@ Reference docs:
 - Session state file path: `$XDG_RUNTIME_DIR/cupidwm-<display>.session` (or `/tmp/cupidwm-<uid>/...` fallback)
 - Enable shell completion for `cupidwmctl`: `source completions/cupidwmctl.bash`
 - For recovery/debug steps, see [docs/troubleshooting.md](docs/troubleshooting.md)
+- Push status updates via `CUPIDWM_BAR_FIFO` when possible so the bar sees immediate, nonblocking data instead of waiting on `status_external_cmd`
 
 ## Ecosystem
 

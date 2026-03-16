@@ -61,7 +61,10 @@ For display-manager/session and hotkey-manager recipes, see:
 ```sh
 make test-smoke
 make test-ewmh
+make test-ipc
 ```
+
+`make test-ipc` needs IPC enabled (`ipc_enable = 1`) in local `config.h`.
 
 Or run full local checks:
 

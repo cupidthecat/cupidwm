@@ -111,9 +111,7 @@ Optional external provider (disabled by default):
 - `status_allow_external_cmd`
 - `status_external_cmd`
 
-When enabled, the external command is executed and its first output line is used
-as status text when root-name status is empty.
-Treat this as shell command execution in your session context.
+When enabled, the external command runs inside a short-lived helper process that is killed after around 200 ms if no newline-terminated line arrives; only the first line is consumed and the helper is stopped, so the command must finish quickly. When you need more flexible updates (e.g., long-running scripts or frequent pushes) prefer the FIFO push model via `CUPIDWM_BAR_FIFO`, which does not block the window manager when delivering status text.
 
 ## IPC Options
 
