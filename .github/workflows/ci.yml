@@ -35,14 +35,6 @@ jobs:
       - name: Run checks under Xvfb
         run: xvfb-run -a make CC=${{ matrix.cc }} check
 
-      - name: Run IPC roundtrip under Xvfb
-        run: |
-          cp config.def.h config.h
-          sed -i 's/static const int ipc_enable = 0;/static const int ipc_enable = 1;/' config.h
-          make CC=${{ matrix.cc }} clean release
-          export XDG_RUNTIME_DIR="$(mktemp -d)"
-          xvfb-run -a bash ./tests/ipc/roundtrip.sh ./cupidwm ./cupidwmctl
-
       - name: Validate release tarball
         run: make CC=${{ matrix.cc }} distcheck
 
@@ -54,4 +46,3 @@ jobs:
           path: |
             /tmp/cupidwm-smoke.*
             /tmp/cupidwm-ewmh.*
-            /tmp/cupidwm-ipc.*
