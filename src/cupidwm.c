@@ -900,6 +900,26 @@ static int session_ensure_private_tmp_dir(char *out_dir, size_t outsz)
 	return 0;
 }
 
+static Bool session_join_path(char *out, size_t outsz, const char *base, const char *name)
+{
+	if (!out || outsz == 0 || !base || !base[0] || !name || !name[0])
+		return False;
+
+	size_t base_len = strlen(base);
+	while (base_len > 1 && base[base_len - 1] == '/')
+		base_len--;
+
+	size_t name_len = strlen(name);
+	if (base_len + 1 + name_len + 1 > outsz)
+		return False;
+
+	memcpy(out, base, base_len);
+	out[base_len] = '/';
+	memcpy(out + base_len + 1, name, name_len);
+	out[base_len + 1 + name_len] = '\0';
+	return True;
+}
+
 static const char *session_state_path(void)
 {
 	if (session_state_path_buf[0])
@@ -910,15 +930,14 @@ static const char *session_state_path(void)
 
 	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
 	if (runtime_dir && runtime_dir[0]) {
-		size_t n = strlen(runtime_dir);
-		while (n > 1 && runtime_dir[n - 1] == '/')
-			n--;
+		char name[128] = {0};
 		if (display_tok[0])
-			snprintf(session_state_path_buf, sizeof(session_state_path_buf),
-			         "%.*s/cupidwm-%s.session", (int)n, runtime_dir, display_tok);
+			snprintf(name, sizeof(name), "cupidwm-%s.session", display_tok);
 		else
-			snprintf(session_state_path_buf, sizeof(session_state_path_buf),
-			         "%.*s/cupidwm.session", (int)n, runtime_dir);
+			snprintf(name, sizeof(name), "cupidwm.session");
+
+		if (!session_join_path(session_state_path_buf, sizeof(session_state_path_buf), runtime_dir, name))
+			return NULL;
 		return session_state_path_buf;
 	}
 
@@ -926,12 +945,14 @@ static const char *session_state_path(void)
 	if (session_ensure_private_tmp_dir(tmp_dir, sizeof(tmp_dir)) < 0)
 		return NULL;
 
+	char name[128] = {0};
 	if (display_tok[0])
-		snprintf(session_state_path_buf, sizeof(session_state_path_buf),
-		         "%s/cupidwm-%s.session", tmp_dir, display_tok);
+		snprintf(name, sizeof(name), "cupidwm-%s.session", display_tok);
 	else
-		snprintf(session_state_path_buf, sizeof(session_state_path_buf),
-		         "%s/cupidwm.session", tmp_dir);
+		snprintf(name, sizeof(name), "cupidwm.session");
+
+	if (!session_join_path(session_state_path_buf, sizeof(session_state_path_buf), tmp_dir, name))
+		return NULL;
 
 	return session_state_path_buf;
 }

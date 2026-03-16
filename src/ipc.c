@@ -270,7 +270,19 @@ static void ipc_write_replyf(int fd, const char *fmt, ...)
 	char out[2048];
 	va_list ap;
 	va_start(ap, fmt);
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+#endif
 	vsnprintf(out, sizeof(out), fmt, ap);
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 	va_end(ap);
 	ipc_write_reply(fd, out);
 }
