@@ -144,17 +144,24 @@ void setup_bars(void)
 			mons[i].bar_y = mons[i].y + mons[i].reserve_top - user_config.bar_height;
 		else
 			mons[i].bar_y = mons[i].y + mons[i].h - mons[i].reserve_bottom;
-		mons[i].barwin = XCreateSimpleWindow(
+		XSetWindowAttributes wa = {
+			.override_redirect = True,
+			.background_pixel = pixel(user_config.bar_bg_col),
+			.border_pixel = pixel(user_config.bar_bg_col),
+			.event_mask = ExposureMask | ButtonPressMask
+		};
+		mons[i].barwin = XCreateWindow(
 			dpy, root, mons[i].x, mons[i].bar_y, (unsigned int)mons[i].w,
-			(unsigned int)user_config.bar_height, 0, pixel(user_config.bar_bg_col),
-			pixel(user_config.bar_bg_col)
+			(unsigned int)user_config.bar_height, 0,
+			DefaultDepth(dpy, DefaultScreen(dpy)), CopyFromParent,
+			DefaultVisual(dpy, DefaultScreen(dpy)),
+			CWOverrideRedirect | CWBackPixel | CWBorderPixel | CWEventMask, &wa
 		);
 		{
 			Atom dock = atoms[ATOM_NET_WM_WINDOW_TYPE_DOCK];
 			XChangeProperty(dpy, mons[i].barwin, atoms[ATOM_NET_WM_WINDOW_TYPE], XA_ATOM, 32,
 						PropModeReplace, (unsigned char *)&dock, 1);
 		}
-		select_input(mons[i].barwin, ExposureMask | ButtonPressMask);
 		XMapRaised(dpy, mons[i].barwin);
 	}
 
