@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang \
+            libx11-dev libxinerama-dev libxrandr-dev libxcursor-dev \
+            libxft-dev libfontconfig-dev libfreetype6-dev \
+            cppcheck shellcheck \
+            xvfb xserver-xephyr x11-utils xdotool xterm
+
+      - name: Build release
+        run: make CC=${{ matrix.cc }} release
+
+      - name: Lint
+        run: make CC=${{ matrix.cc }} lint
+
+      - name: Run checks under Xvfb
+        run: xvfb-run -a make CC=${{ matrix.cc }} check
+
+      - name: Validate release tarball
+        run: make CC=${{ matrix.cc }} distcheck
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.cc }}
+          path: |
+            /tmp/cupidwm-smoke.*
+            /tmp/cupidwm-ewmh.*
