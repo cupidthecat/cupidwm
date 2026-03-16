@@ -23,7 +23,7 @@ need_cmd() {
 
 [ -n "$HOST_DISPLAY" ] || fail "host DISPLAY is not set"
 
-for cmd in Xephyr xdpyinfo xprop mktemp grep sed; do
+for cmd in Xephyr xdpyinfo xprop mktemp grep sed touch; do
 	need_cmd "$cmd"
 done
 
@@ -80,6 +80,17 @@ wait_socket() {
 	return 1
 }
 
+wait_process_exit() {
+	local pid="$1"
+	for _ in $(seq 1 80); do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
 wait_root_prop_contains() {
 	local prop="$1"
 	local expect="$2"
@@ -97,7 +108,7 @@ wait_ctl_reply() {
 	shift
 	for _ in $(seq 1 80); do
 		local out=""
-		out="$("$CTL_BIN" "$@" 2>"${LOG_DIR}/ctl.err" || true)"
+		out="$($CTL_BIN "$@" 2>"${LOG_DIR}/ctl.err" || true)"
 		if echo "$out" | grep -Eq "$expect"; then
 			echo "$out"
 			return 0
@@ -112,7 +123,7 @@ DISPLAY="$HOST_DISPLAY" Xephyr "$TEST_DISPLAY" -screen 1280x720 -ac -nolisten tc
 xephyr_pid=$!
 wait_display || fail "Xephyr did not become ready"
 
-expected_socket="$("$CTL_BIN" --print-socket)"
+expected_socket="$($CTL_BIN --print-socket)"
 [ -n "$expected_socket" ] || fail "failed to resolve expected socket path"
 
 "$WM_BIN" >"${LOG_DIR}/wm.log" 2>&1 &
@@ -126,7 +137,61 @@ wait_root_prop_contains _CUPIDWM_IPC_SOCKET "$expected_socket" || fail "root pro
 ping_out="$(wait_ctl_reply '^ok pong$' ping || true)"
 [ -n "$ping_out" ] || fail "cupidwmctl ping did not succeed"
 
-status_out="$(wait_ctl_reply '^ok workspace=1 monitor=' status || true)"
+status_out="$(wait_ctl_reply '^ok workspace=[0-9]+ monitor=' status || true)"
 [ -n "$status_out" ] || fail "cupidwmctl status did not succeed"
-
 echo "$status_out" | grep -Eq 'layout=' || fail "status output did not include layout details"
+
+bar_set_out="$(wait_ctl_reply '^ok$' 'bar status set IPC-Status-Test' || true)"
+[ -n "$bar_set_out" ] || fail "bar status set did not succeed"
+
+bar_query_out="$(wait_ctl_reply '^ok show=' 'query bar' || true)"
+[ -n "$bar_query_out" ] || fail "query bar did not succeed"
+echo "$bar_query_out" | grep -Fq 'status text=IPC-Status-Test' || fail "query bar did not include pushed status text"
+
+click_marker="${LOG_DIR}/status-click.marker"
+rm -f "$click_marker"
+
+bar_action_set_out="$(wait_ctl_reply '^ok$' "bar action set 1 left touch $click_marker" || true)"
+[ -n "$bar_action_set_out" ] || fail "bar action set did not succeed"
+
+bar_click_out="$(wait_ctl_reply '^ok$' 'bar click 1 left' || true)"
+[ -n "$bar_click_out" ] || fail "bar click did not succeed"
+
+for _ in $(seq 1 20); do
+	[ -f "$click_marker" ] && break
+	sleep 0.1
+done
+[ -f "$click_marker" ] || fail "bar click did not dispatch action command"
+
+bar_status_clear_out="$(wait_ctl_reply '^ok$' 'bar status clear' || true)"
+[ -n "$bar_status_clear_out" ] || fail "bar status clear did not succeed"
+
+ws_out="$(wait_ctl_reply '^ok$' workspace 3 || true)"
+[ -n "$ws_out" ] || fail "workspace switch command did not succeed"
+
+layout_out="$(wait_ctl_reply '^ok$' layout monocle || true)"
+[ -n "$layout_out" ] || fail "layout change command did not succeed"
+
+verify_ws_out="$(wait_ctl_reply '^ok workspace=3 monitor=' status || true)"
+[ -n "$verify_ws_out" ] || fail "workspace did not switch to 3 before reload"
+
+verify_layout_out="$(wait_ctl_reply 'workspace id=3 .*layout=monocle' query workspaces || true)"
+[ -n "$verify_layout_out" ] || fail "workspace 3 layout was not monocle before reload"
+
+reload_out="$(wait_ctl_reply '^ok$' reload || true)"
+[ -n "$reload_out" ] || fail "cupidwmctl reload did not succeed"
+
+wait_socket "$expected_socket" || fail "socket not available after reload"
+wait_root_prop_contains _CUPIDWM_IPC_SOCKET "$expected_socket" || fail "root socket property missing after reload"
+
+post_reload_ws_out="$(wait_ctl_reply '^ok workspace=3 monitor=' status || true)"
+[ -n "$post_reload_ws_out" ] || fail "workspace state did not persist across reload"
+
+post_reload_layout_out="$(wait_ctl_reply 'workspace id=3 .*layout=monocle' query workspaces || true)"
+[ -n "$post_reload_layout_out" ] || fail "layout state did not persist across reload"
+
+quit_out="$(wait_ctl_reply '^ok$' quit || true)"
+[ -n "$quit_out" ] || fail "cupidwmctl quit did not succeed"
+
+wait_process_exit "$wm_pid" || fail "window manager did not exit after quit command"
+wm_pid=""

@@ -5,9 +5,13 @@ int collect_bar_clients(int mon, Client **list, int max_clients)
 	if (!list || max_clients <= 0)
 		return 0;
 
+	if (!mons || mon < 0 || mon >= n_mons)
+		return 0;
+
+	int ws = mons[mon].view_ws;
 	int n = 0;
-	for (Client *c = workspaces[current_ws]; c && n < max_clients; c = c->next) {
-		if (c->mon != mon || c->swallowed)
+	for (Client *c = workspaces[ws]; c && n < max_clients; c = c->next) {
+		if (!client_is_visible_on_monitor(c, mon) || c->swallowed)
 			continue;
 		list[n++] = c;
 	}
@@ -113,7 +117,6 @@ void setup_bars(void)
 			bar_font = XLoadQueryFont(dpy, font_candidates[i]);
 		}
 	}
-
 	if (!bar_gc) {
 		XGCValues gcv = {0};
 		bar_gc = XCreateGC(dpy, root, 0, &gcv);
@@ -164,7 +167,6 @@ void setup_bars(void)
 		}
 		XMapRaised(dpy, mons[i].barwin);
 	}
-
 	drawbars();
 }
 
@@ -179,6 +181,8 @@ void drawbar(Monitor *m)
 				     : (bar_font ? (bar_font->ascent + bar_font->descent) : 8);
 	int y = (bh - font_h) / 2 + (bar_xft_font ? bar_xft_font->ascent : (bar_font ? bar_font->ascent : bh - 6));
 	int is_curr_mon = (m == &mons[current_mon]);
+	int mon = (int)(m - mons);
+	int view_ws = (mon >= 0 && mon < n_mons) ? mons[mon].view_ws : current_ws;
 	Drawable d = m->barwin;
 	Pixmap barbuf = XCreatePixmap(dpy, m->barwin, (unsigned int)m->w, (unsigned int)bh,
 				      (unsigned int)DefaultDepth(dpy, DefaultScreen(dpy)));
@@ -193,7 +197,7 @@ void drawbar(Monitor *m)
 
 	for (int i = 0; i < NUM_WORKSPACES; i++) {
 		int tw = textw(tags[i]) + 14;
-		Bool selected = (i == current_ws);
+		Bool selected = (i == view_ws);
 
 		XSetForeground(dpy, bar_gc, selected ? pixel(user_config.bar_sel_bg_col) : pixel(user_config.bar_bg_col));
 		XFillRectangle(dpy, d, bar_gc, x, 0, (unsigned int)tw, (unsigned int)bh);
@@ -207,7 +211,7 @@ void drawbar(Monitor *m)
 	}
 
 	{
-		const char *lsym = layouts[current_layout].symbol;
+		const char *lsym = layouts[workspace_layout_for(view_ws)].symbol;
 		int tw = textw(lsym) + 14;
 		XSetForeground(dpy, bar_gc, pixel(user_config.bar_fg_col));
 		if (bar_xft_font)
@@ -221,7 +225,6 @@ void drawbar(Monitor *m)
 	int title_x = x;
 	int title_w = MAX(0, m->w - title_x - status_w);
 	if (title_w > 8) {
-		int mon = (int)(m - mons);
 		Client *clients[MAX_CLIENTS];
 		int n = user_config.bar_show_tabs ? collect_bar_clients(mon, clients, MAX_CLIENTS) : 0;
 
@@ -266,16 +269,16 @@ void drawbar(Monitor *m)
 				tx += tab_w;
 			}
 		}
-		else if (user_config.bar_show_title_fallback) {
-			Client *tc = NULL;
-			if (focused && focused->mapped && focused->mon == mon && focused->ws == current_ws && !focused->swallower)
-				tc = focused;
-			if (!tc) {
-				for (Client *c = workspaces[current_ws]; c; c = c->next) {
-					if (!c->mapped || c->mon != mon || c->swallower)
-						continue;
-					tc = c;
-					break;
+			else if (user_config.bar_show_title_fallback) {
+				Client *tc = NULL;
+				if (focused && client_is_visible_on_monitor(focused, mon) && !focused->swallower)
+					tc = focused;
+				if (!tc) {
+					for (Client *c = workspaces[view_ws]; c; c = c->next) {
+						if (!client_is_visible_on_monitor(c, mon) || c->swallower)
+							continue;
+						tc = c;
+						break;
 				}
 			}
 

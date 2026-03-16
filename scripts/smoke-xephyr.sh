@@ -162,6 +162,69 @@ root_current_desktop() {
 	xprop -root _NET_CURRENT_DESKTOP 2>/dev/null | awk -F' = ' '/_NET_CURRENT_DESKTOP/{gsub(/[[:space:]]/, "", $2); print $2; exit}'
 }
 
+root_active_window() {
+	xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | awk -F' = ' '/_NET_ACTIVE_WINDOW/ {
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2);
+		if ($2 ~ /^0x[0-9a-fA-F]+$/) print tolower($2);
+		exit
+	}'
+}
+
+wait_active_window() {
+	local want="$1"
+	for _ in $(seq 1 100); do
+		local got=""
+		got="$(root_active_window || true)"
+		if [ -n "${got}" ] && [ "${got}" = "${want}" ]; then
+			echo "${got}"
+			return 0
+		fi
+		sleep 0.05
+	done
+	return 1
+}
+
+focused_window_hex() {
+	local got=""
+	got="$(xdotool getwindowfocus 2>/dev/null || true)"
+	if [ -n "${got}" ] && [ "${got}" -gt 0 ] 2>/dev/null; then
+		printf '0x%x\n' "${got}" | tr '[:upper:]' '[:lower:]'
+		return 0
+	fi
+	return 1
+}
+
+wait_focus_window() {
+	local want="$1"
+	for _ in $(seq 1 100); do
+		local root_got=""
+		local focus_got=""
+		root_got="$(root_active_window || true)"
+		focus_got="$(focused_window_hex || true)"
+		if [ "${root_got}" = "${want}" ] || [ "${focus_got}" = "${want}" ]; then
+			echo "${want}"
+			return 0
+		fi
+		sleep 0.05
+	done
+	return 1
+}
+
+wait_not_focused_window() {
+	local reject="$1"
+	for _ in $(seq 1 120); do
+		local root_got=""
+		local focus_got=""
+		root_got="$(root_active_window || true)"
+		focus_got="$(focused_window_hex || true)"
+		if [ "${root_got}" != "${reject}" ] && [ "${focus_got}" != "${reject}" ]; then
+			return 0
+		fi
+		sleep 0.05
+	done
+	return 1
+}
+
 wait_current_desktop() {
 	local want="$1"
 	for _ in $(seq 1 100); do
@@ -254,6 +317,21 @@ wid_a="$(wait_visible_window_by_pid "${pid_a}" || wait_visible_window_by_name '^
 wait_visible_id "${wid_a}" >/dev/null || fail "workspace test window is not viewable"
 
 focus_window "${wid_a}"
+sleep 0.1
+wid_a_hex="0x$(printf '%x' "${wid_a}")"
+wait_focus_window "${wid_a_hex}" >/dev/null || true
+
+spawn_xterm "rule-substr-nofocus" -name "my-cupidwm-substr-nofocus-window" -title "my-cupidwm-substr-nofocus-window" -class "my-cupidwm-substr-nofocus-window" -geometry 80x24+120+120
+pid_rule="${last_spawn_pid}"
+wid_rule="$(wait_visible_window_by_pid "${pid_rule}" || wait_visible_window_by_name '^my-cupidwm-substr-nofocus-window$' || true)"
+[ -n "${wid_rule}" ] || fail "rule no-focus test window did not appear"
+wait_visible_id "${wid_rule}" >/dev/null || fail "rule no-focus test window is not viewable"
+
+sleep 0.2
+wid_rule_hex="0x$(printf '%x' "${wid_rule}")"
+wait_not_focused_window "${wid_rule_hex}" || fail "no-focus rule window became focused after map"
+
+	focus_window "${wid_a}"
 send_key "super+2"
 [ "$(root_current_desktop)" = "1" ] || fail "workspace switch to 2 failed"
 send_key "super+1"
@@ -333,6 +411,28 @@ done
 
 mons="$(monitor_count)"
 if [ "${mons}" -ge 2 ]; then
+	send_key "super+1"
+	spawn_xterm "mon-left" -title "mon-left" -class st -geometry 80x24+80+80
+	pid_left="${last_spawn_pid}"
+	wid_left="$(wait_visible_window_by_pid "${pid_left}" || wait_visible_window_by_name '^mon-left$' || true)"
+	[ -n "${wid_left}" ] || fail "left-monitor workspace test window did not appear"
+	wait_visible_id "${wid_left}" >/dev/null || fail "left-monitor workspace test window is not viewable"
+
+	send_key "super+period"
+	spawn_xterm "mon-right" -title "mon-right" -class st -geometry 80x24+1080+80
+	pid_right="${last_spawn_pid}"
+	wid_right="$(wait_visible_window_by_pid "${pid_right}" || wait_visible_window_by_name '^mon-right$' || true)"
+	[ -n "${wid_right}" ] || fail "right-monitor workspace test window did not appear"
+	wait_visible_id "${wid_right}" >/dev/null || fail "right-monitor workspace test window is not viewable"
+
+	send_key "super+3"
+	wait_invisible_id "${wid_right}" || fail "right-monitor workspace switch did not hide the right monitor window"
+	wait_visible_id "${wid_left}" >/dev/null || fail "switching the right monitor workspace affected the left monitor window"
+
+	send_key "super+period"
+	wait_current_desktop "0" || fail "left monitor did not keep its own workspace after switching the right monitor"
+	wait_visible_id "${wid_left}" >/dev/null || fail "left monitor window disappeared after cross-monitor workspace switch"
+
 	focus_window "${wid_tg}"
 	x_before="$(xwininfo -id "${wid_tg}" | awk '/Absolute upper-left X:/ {print $4; exit}')"
 	send_key "super+period"

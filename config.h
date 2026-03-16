@@ -56,21 +56,40 @@ static const int floating_on_top = 1;
 static const int new_window_master = 0;
 static const int default_gaps = 5;
 static const float master_width_default = 0.60f;
-static const int ipc_enable = 0;
+static const int ipc_enable = 1;
 static const char ipc_socket_path[] = "";
 
 /* workspaces */
 static const char *tags[NUM_WORKSPACES] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 
-/* class rules */
+/* class rules: match by class/instance/title and apply defaults on map.
+ * Use -1 for workspace/monitor/scratchpad/geometry fields to leave them unchanged. */
 static const Rule rules[] = {
-	/* class,      instance, title, workspace, is_floating, start_fullscreen, can_swallow, can_be_swallowed */
-	{ "pcmanfm",  NULL,     NULL,  -1,        True,        False,            False,       False },
-	{ "thunar",   NULL,     NULL,  -1,        False,       False,            False,       True  },
-	{ "obs",      NULL,     NULL,  -1,        True,        False,            False,       False },
-	{ "mpv",      NULL,     NULL,  -1,        False,       True,             False,       True  },
-	{ "vlc",      NULL,     NULL,  -1,        False,       True,             False,       True  },
-	{ "st",       NULL,     NULL,  -1,        False,       False,            True,        False },
+	{ .class = "pcmanfm", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	  .x = -1, .y = -1, .w = -1, .h = -1,
+	  .is_floating = True, .match_mode = RuleMatchExact },
+	{ .class = "thunar", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	  .x = -1, .y = -1, .w = -1, .h = -1,
+	  .can_be_swallowed = True, .match_mode = RuleMatchExact },
+	{ .class = "obs", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	  .x = -1, .y = -1, .w = -1, .h = -1,
+	  .is_floating = True, .match_mode = RuleMatchExact },
+	{ .class = "mpv", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	  .x = -1, .y = -1, .w = -1, .h = -1,
+	  .start_fullscreen = True, .can_be_swallowed = True, .match_mode = RuleMatchExact },
+	{ .class = "vlc", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	  .x = -1, .y = -1, .w = -1, .h = -1,
+	  .start_fullscreen = True, .can_be_swallowed = True, .match_mode = RuleMatchExact },
+	{ .class = "st", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	  .x = -1, .y = -1, .w = -1, .h = -1,
+	  .can_swallow = True, .match_mode = RuleMatchExact },
+	{ .class = "cupidwm-substr-nofocus", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	  .x = -1, .y = -1, .w = -1, .h = -1,
+	  .no_focus_on_map = True, .match_mode = RuleMatchSubstring },
+	{ .title = "^cupidwm-regex-utility", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	  .x = -1, .y = -1, .w = -1, .h = -1,
+	  .is_floating = True, .centered = True, .skip_taskbar = True, .skip_pager = True,
+	  .match_mode = RuleMatchRegex },
 };
 
 /* layouts */
@@ -113,6 +132,26 @@ static const Key keys[] = {
 	{ MODKEY|ShiftMask,             XK_r,       restartwm,               {0} },
 	{ MODKEY,                       XK_j,       focusnextcmd,            {0} },
 	{ MODKEY,                       XK_k,       focusprevcmd,            {0} },
+	{ MODKEY|Mod1Mask,              XK_h,       focusdircmd,             {.i = DIR_LEFT} },
+	{ MODKEY|Mod1Mask,              XK_l,       focusdircmd,             {.i = DIR_RIGHT} },
+	{ MODKEY|Mod1Mask,              XK_k,       focusdircmd,             {.i = DIR_UP} },
+	{ MODKEY|Mod1Mask,              XK_j,       focusdircmd,             {.i = DIR_DOWN} },
+	{ MODKEY|Mod1Mask|ShiftMask,    XK_h,       swapdircmd,              {.i = DIR_LEFT} },
+	{ MODKEY|Mod1Mask|ShiftMask,    XK_l,       swapdircmd,              {.i = DIR_RIGHT} },
+	{ MODKEY|Mod1Mask|ShiftMask,    XK_k,       swapdircmd,              {.i = DIR_UP} },
+	{ MODKEY|Mod1Mask|ShiftMask,    XK_j,       swapdircmd,              {.i = DIR_DOWN} },
+	{ MODKEY|Mod1Mask|ControlMask,  XK_h,       movedircmd,              {.i = DIR_LEFT} },
+	{ MODKEY|Mod1Mask|ControlMask,  XK_l,       movedircmd,              {.i = DIR_RIGHT} },
+	{ MODKEY|Mod1Mask|ControlMask,  XK_k,       movedircmd,              {.i = DIR_UP} },
+	{ MODKEY|Mod1Mask|ControlMask,  XK_j,       movedircmd,              {.i = DIR_DOWN} },
+	{ MODKEY|Mod1Mask,              XK_Left,    focusmondircmd,          {.i = DIR_LEFT} },
+	{ MODKEY|Mod1Mask,              XK_Right,   focusmondircmd,          {.i = DIR_RIGHT} },
+	{ MODKEY|Mod1Mask,              XK_Up,      focusmondircmd,          {.i = DIR_UP} },
+	{ MODKEY|Mod1Mask,              XK_Down,    focusmondircmd,          {.i = DIR_DOWN} },
+	{ MODKEY|Mod1Mask|ShiftMask,    XK_Left,    sendmondircmd,           {.i = DIR_LEFT} },
+	{ MODKEY|Mod1Mask|ShiftMask,    XK_Right,   sendmondircmd,           {.i = DIR_RIGHT} },
+	{ MODKEY|Mod1Mask|ShiftMask,    XK_Up,      sendmondircmd,           {.i = DIR_UP} },
+	{ MODKEY|Mod1Mask|ShiftMask,    XK_Down,    sendmondircmd,           {.i = DIR_DOWN} },
 	{ MODKEY|ShiftMask,             XK_j,       masternextcmd,           {0} },
 	{ MODKEY|ShiftMask,             XK_k,       masterprevcmd,           {0} },
 	{ MODKEY,                       XK_h,       masterdecreasecmd,       {0} },
@@ -174,6 +213,7 @@ static const Button buttons[] = {
 	{ ClkLtSymbol,    0,                Button1, setlayoutcmd,      {.i = -1} },
 	{ ClkTagBar,      0,                Button1, viewws,            {0} },
 	{ ClkTagBar,      ShiftMask,        Button1, movetows,          {0} },
+	{ ClkWinTitle,    0,                Button3, closewindowcmd,    {0} },
 	{ ClkClientWin,   MODKEY,           Button1, movemousecmd,      {0} },
 	{ ClkClientWin,   MODKEY|ShiftMask, Button1, swapmousecmd,      {0} },
 	{ ClkClientWin,   MODKEY,           Button2, togglefloatingcmd, {0} },

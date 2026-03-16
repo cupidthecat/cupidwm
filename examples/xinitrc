@@ -1,0 +1,19 @@
+#!/bin/sh
+# Example ~/.xinitrc for cupidwm
+
+export XDG_CURRENT_DESKTOP=cupidwm
+
+# Optional: launch sxhkd for external hotkey management
+if command -v sxhkd >/dev/null 2>&1; then
+	sxhkd -c "$HOME/.config/sxhkd/sxhkdrc" &
+fi
+
+# Optional: set wallpaper/background
+if command -v feh >/dev/null 2>&1; then
+	feh --bg-fill "$HOME/.wallpaper" 2>/dev/null || true
+fi
+
+# Optional status provider
+# while true; do xsetroot -name "$(date '+%a %b %d %H:%M')"; sleep 5; done &
+
+exec cupidwm

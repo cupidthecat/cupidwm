@@ -1,5 +1,63 @@
 /* Extracted from cupidwm.c: input and X event handlers. */
 
+static int monitor_at_point(int x_root, int y_root)
+{
+	if (!mons || n_mons <= 0)
+		return 0;
+
+	for (int i = 0; i < n_mons; i++) {
+		if (x_root >= mons[i].x && x_root < mons[i].x + mons[i].w &&
+		    y_root >= mons[i].y && y_root < mons[i].y + mons[i].h)
+			return i;
+	}
+
+	return CLAMP(current_mon, 0, n_mons - 1);
+}
+
+static void activate_monitor(int mon)
+{
+	if (!mons || n_mons <= 0)
+		return;
+
+	mon = CLAMP(mon, 0, n_mons - 1);
+	if (mon == current_mon)
+		return;
+
+	Window prev_focused = focused ? focused->win : None;
+	int prev_ws = current_ws;
+	int prev_mon = current_mon;
+
+	current_mon = mon;
+	sync_active_monitor_state();
+
+	Client *target = workspace_states[current_ws].focused;
+	if (!target || !client_is_visible_on_monitor(target, current_mon))
+		target = ws_focused[current_ws];
+	if (!target || !client_is_visible_on_monitor(target, current_mon))
+		target = first_visible_client(current_ws, current_mon, NULL);
+
+	if (target) {
+		set_input_focus(target, True, False);
+		return;
+	}
+
+	focused = NULL;
+	XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+	XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
+	publish_current_desktop();
+	update_focused_ewmh_state(NULL);
+	update_net_client_list();
+	update_borders();
+	XFlush(dpy);
+
+	if (prev_focused != None || current_ws != prev_ws || current_mon != prev_mon) {
+		char details[192];
+		snprintf(details, sizeof(details), "focused=0x0 workspace=%d monitor=%d",
+		         current_ws + 1, current_mon);
+		ipc_notify_event("focus", details);
+	}
+}
+
 void hdl_button(XEvent *xev)
 {
 	XButtonEvent *xbutton = &xev->xbutton;
@@ -7,17 +65,26 @@ void hdl_button(XEvent *xev)
 		if (xbutton->window != mons[m].barwin)
 			continue;
 
+		if (m != current_mon) {
+			current_mon = m;
+			sync_active_monitor_state();
+		}
+
+		int bar_ws = mons[m].view_ws;
 		unsigned int click = ClkWinTitle;
 		Arg arg;
 		memset(&arg, 0, sizeof(arg));
 		int x = 0;
 		int tw = 0;
 		int lw = 0;
+		int title_x = 0;
+		int title_w = 0;
+		Client *title_target = NULL;
 		tw = textw(stext) + 12;
 		if (m != current_mon)
 			tw = 0;
 
-		lw = textw(layouts[current_layout].symbol) + 14;
+		lw = textw(layouts[workspace_layout_for(bar_ws)].symbol) + 14;
 
 		for (int i = 0; i < NUM_WORKSPACES; i++) {
 			int w = textw(tags[i]) + 14;
@@ -36,50 +103,85 @@ void hdl_button(XEvent *xev)
 				click = ClkStatusText;
 		}
 
+		if (click == ClkWinTitle && user_config.bar_show_tabs) {
+			title_x = x + lw;
+			title_w = MAX(0, mons[m].w - title_x - tw);
+			title_target = bar_client_at(&mons[m], xbutton->x, title_x, title_w);
+		}
+
+		if (click == ClkStatusText && tw > 0) {
+			int status_x = mons[m].w - tw + 6;
+			int rel_x = xbutton->x - status_x;
+			if (status_dispatch_click_at(rel_x, xbutton->button))
+				return;
+		}
+
+		unsigned int state = clean_mask(xbutton->state);
+		unsigned int keymods = state & (ShiftMask | LockMask | ControlMask | Mod1Mask |
+		                               Mod2Mask | Mod3Mask | Mod4Mask | Mod5Mask);
+
 		if (click == ClkWinTitle &&
+		    title_target &&
 		    user_config.bar_show_tabs &&
 		    user_config.bar_click_focus_tabs &&
 		    xbutton->button == Button1 &&
-		    clean_mask(xbutton->state) == 0) {
-			int title_x = x + lw;
-			int title_w = MAX(0, mons[m].w - title_x - tw);
-			Client *target = bar_client_at(&mons[m], xbutton->x, title_x, title_w);
-			if (target) {
-				if (!target->mapped) {
-					XMapWindow(dpy, target->win);
-					target->mapped = True;
-					if (!global_floating && !target->floating && !target->fullscreen)
-						tile();
-					set_input_focus(target, True, False);
-					update_borders();
-					drawbars();
-				}
-				else if (target == focused) {
-					XUnmapWindow(dpy, target->win);
-					target->mapped = False;
-
-					Client *next_focus = NULL;
-					for (Client *c = workspaces[current_ws]; c; c = c->next) {
-						if (!c->mapped || c == target)
-							continue;
-						next_focus = c;
-						if (c->mon == target->mon)
-							break;
-					}
-
-					if (next_focus)
-						set_input_focus(next_focus, True, False);
-					else
-						set_input_focus(NULL, False, False);
-
+		    keymods == 0) {
+			if (!title_target->mapped) {
+				XMapWindow(dpy, title_target->win);
+				title_target->mapped = True;
+				if (!global_floating && !title_target->floating && !title_target->fullscreen)
 					tile();
-					update_borders();
-					drawbars();
-				}
-				else {
-					set_input_focus(target, True, False);
-				}
+				set_input_focus(title_target, True, False);
+				update_borders();
+				drawbars();
 			}
+			else if (title_target == focused) {
+				XUnmapWindow(dpy, title_target->win);
+				title_target->mapped = False;
+
+				Client *next_focus = first_visible_client(bar_ws, title_target->mon, title_target);
+				if (next_focus)
+					set_input_focus(next_focus, True, False);
+				else
+					set_input_focus(NULL, False, False);
+
+				tile();
+				update_borders();
+				drawbars();
+			}
+			else {
+				set_input_focus(title_target, True, False);
+			}
+			return;
+		}
+
+		if (click == ClkWinTitle &&
+		    title_target &&
+		    user_config.bar_show_tabs &&
+		    user_config.bar_click_focus_tabs &&
+		    xbutton->button == Button3 &&
+		    keymods == 0) {
+			if (title_target->mapped) {
+				XUnmapWindow(dpy, title_target->win);
+				title_target->mapped = False;
+
+				Client *next_focus = first_visible_client(bar_ws, title_target->mon, title_target);
+				if (next_focus)
+					set_input_focus(next_focus, True, False);
+				else
+					set_input_focus(NULL, False, False);
+			}
+			else {
+				XMapWindow(dpy, title_target->win);
+				title_target->mapped = True;
+				if (!global_floating && !title_target->floating && !title_target->fullscreen)
+					tile();
+				set_input_focus(title_target, True, False);
+			}
+
+			tile();
+			update_borders();
+			drawbars();
 			return;
 		}
 
@@ -100,6 +202,12 @@ void hdl_button(XEvent *xev)
 				continue;
 			if (!buttons[i].func)
 				continue;
+			if (click == ClkWinTitle) {
+				if (!title_target)
+					continue;
+				if (title_target != focused)
+					set_input_focus(title_target, True, False);
+			}
 			if (click == ClkTagBar && buttons[i].arg.i == 0)
 				buttons[i].func(&arg);
 			else
@@ -118,10 +226,8 @@ void hdl_button(XEvent *xev)
 	if (!w)
 		return;
 
-	Client *head = workspaces[current_ws];
-	for (Client *c = head; c; c = c->next) {
-		if (c->win != w)
-			continue;
+	Client *c = find_client(w);
+	if (c && client_is_visible(c)) {
 
 		Bool is_swap_mode =
 			(xbutton->state & user_config.modkey) &&
@@ -137,7 +243,7 @@ void hdl_button(XEvent *xev)
 			drag_orig_h = c->h;
 			drag_mode = DRAG_SWAP;
 			XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
-					     GrabModeAsync, GrabModeAsync, None, cursor_move, CurrentTime);
+				     GrabModeAsync, GrabModeAsync, None, cursor_move, CurrentTime);
 			focused = c;
 			set_input_focus(focused, False, False);
 			XSetWindowBorder(dpy, c->win, user_config.border_swap_col);
@@ -234,16 +340,48 @@ static Bool resolve_state_action(Bool current, long action, Bool *want_out)
 
 static Client *next_focus_candidate(Client *skip)
 {
-	Client *fallback = NULL;
-	for (Client *c = workspaces[current_ws]; c; c = c->next) {
-		if (!c->mapped || c == skip)
-			continue;
-		if (c->mon == current_mon)
-			return c;
-		if (!fallback)
-			fallback = c;
+	return first_visible_client(current_ws, current_mon, skip);
+}
+
+static void sync_urgency_from_wm_hints(Client *c)
+{
+	if (!c)
+		return;
+
+	XWMHints *hints = XGetWMHints(dpy, c->win);
+	if (!hints)
+		return;
+
+	Bool urgent = (hints->flags & XUrgencyHint) ? True : False;
+	if (c == focused && urgent) {
+		hints->flags &= ~XUrgencyHint;
+		XSetWMHints(dpy, c->win, hints);
+		urgent = False;
 	}
-	return fallback;
+	window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION], urgent);
+	XFree(hints);
+}
+
+static void set_client_urgency_hint(Client *c, Bool urgent)
+{
+	if (!c)
+		return;
+
+	XWMHints *hints = XGetWMHints(dpy, c->win);
+	if (!hints) {
+		hints = XAllocWMHints();
+		if (!hints)
+			return;
+		hints->flags = 0;
+	}
+
+	if (urgent)
+		hints->flags |= XUrgencyHint;
+	else
+		hints->flags &= ~XUrgencyHint;
+
+	XSetWMHints(dpy, c->win, hints);
+	XFree(hints);
 }
 
 static void apply_hidden_state(Client *c, Bool want_hidden, Bool *needs_layout, Bool *needs_borders, Bool *needs_refocus)
@@ -262,10 +400,10 @@ static void apply_hidden_state(Client *c, Bool want_hidden, Bool *needs_layout, 
 		XUnmapWindow(dpy, c->win);
 		c->mapped = False;
 
-		if (c->ws == current_ws) {
-			if (needs_layout)
-				*needs_layout = True;
-			if (needs_borders)
+			if (client_should_be_visible(c)) {
+				if (needs_layout)
+					*needs_layout = True;
+				if (needs_borders)
 				*needs_borders = True;
 			if (needs_refocus && focused == c)
 				*needs_refocus = True;
@@ -274,7 +412,7 @@ static void apply_hidden_state(Client *c, Bool want_hidden, Bool *needs_layout, 
 	}
 
 	c->mapped = True;
-	if (c->ws != current_ws)
+	if (!client_should_be_visible(c))
 		return;
 
 	XMapWindow(dpy, c->win);
@@ -323,8 +461,8 @@ static void apply_maximized_state(Client *c, Bool want_horz, Bool want_vert, Boo
 		if (!c->floating) {
 			c->floating = True;
 			c->max_forced_floating = True;
-			if (needs_layout && c->ws == current_ws)
-				*needs_layout = True;
+				if (needs_layout && client_should_be_visible(c))
+					*needs_layout = True;
 		}
 
 		int mon = CLAMP(c->mon, 0, n_mons - 1);
@@ -340,8 +478,8 @@ static void apply_maximized_state(Client *c, Bool want_horz, Bool want_vert, Boo
 		c->y = ny;
 		c->w = nw;
 		c->h = nh;
-		if (needs_borders && c->ws == current_ws)
-			*needs_borders = True;
+			if (needs_borders && client_should_be_visible(c))
+				*needs_borders = True;
 		return;
 	}
 
@@ -364,19 +502,82 @@ static void apply_maximized_state(Client *c, Bool want_horz, Bool want_vert, Boo
 		c->floating = c->max_restore_floating;
 		if (!c->floating)
 			c->mon = get_monitor_for(c);
-		if (needs_layout && c->ws == current_ws)
+		if (needs_layout && client_should_be_visible(c))
 			*needs_layout = True;
 	}
 
 	c->max_forced_floating = False;
 	c->max_restore_valid = False;
-	if (needs_borders && c->ws == current_ws)
+	if (needs_borders && client_should_be_visible(c))
 		*needs_borders = True;
 }
 
 void hdl_client_msg(XEvent *xev)
 {
 	XClientMessageEvent *client_msg_ev = &xev->xclient;
+
+	if (client_msg_ev->message_type == atoms[ATOM_NET_REQUEST_FRAME_EXTENTS]) {
+		set_frame_extents(client_msg_ev->window);
+		return;
+	}
+
+	if (client_msg_ev->message_type == atoms[ATOM_NET_MOVERESIZE_WINDOW]) {
+		Client *c = find_client(find_toplevel(client_msg_ev->window));
+		if (!c || c->fullscreen)
+			return;
+
+		unsigned long packed = (unsigned long)client_msg_ev->data.l[0];
+		unsigned long flags = (packed >> 8) & 0x0f;
+		int nx = c->x;
+		int ny = c->y;
+		int nw = c->w;
+		int nh = c->h;
+
+		if (flags & (1UL << 0))
+			nx = (int)client_msg_ev->data.l[1];
+		if (flags & (1UL << 1))
+			ny = (int)client_msg_ev->data.l[2];
+		if (flags & (1UL << 2))
+			nw = MAX(1, (int)client_msg_ev->data.l[3]);
+		if (flags & (1UL << 3))
+			nh = MAX(1, (int)client_msg_ev->data.l[4]);
+
+		if (!c->floating) {
+			c->floating = True;
+			c->modal_forced_floating = False;
+		}
+
+		XMoveResizeWindow(dpy, c->win, nx, ny, (unsigned int)nw, (unsigned int)nh);
+		c->x = nx;
+		c->y = ny;
+		c->w = nw;
+		c->h = nh;
+		update_borders();
+		return;
+	}
+
+	if (client_msg_ev->message_type == atoms[ATOM_NET_RESTACK_WINDOW]) {
+		Client *c = find_client(find_toplevel(client_msg_ev->window));
+		if (!c)
+			return;
+
+		XWindowChanges wc = {0};
+		unsigned int mask = CWStackMode;
+		int detail = (int)client_msg_ev->data.l[2];
+		if (detail < Above || detail > Opposite)
+			detail = Above;
+		wc.stack_mode = detail;
+
+		Window sibling = (Window)client_msg_ev->data.l[1];
+		if (sibling != None) {
+			wc.sibling = sibling;
+			mask |= CWSibling;
+		}
+
+		XConfigureWindow(dpy, c->win, mask, &wc);
+		update_net_client_list();
+		return;
+	}
 
 	if (client_msg_ev->message_type == atoms[ATOM_NET_CURRENT_DESKTOP]) {
 		int ws = (int)client_msg_ev->data.l[0];
@@ -389,7 +590,17 @@ void hdl_client_msg(XEvent *xev)
 		Client *c = find_client(w);
 		if (!c)
 			return;
+		if (c->suppress_focus_until_sec > 0) {
+			long now = (long)time(NULL);
+			if (now <= c->suppress_focus_until_sec)
+				return;
+			c->suppress_focus_until_sec = 0;
+		}
 
+		if (c->mon != current_mon) {
+			current_mon = CLAMP(c->mon, 0, n_mons - 1);
+			sync_active_monitor_state();
+		}
 		if (c->ws != current_ws)
 			change_workspace(c->ws);
 		if (c->hidden) {
@@ -595,6 +806,8 @@ void hdl_client_msg(XEvent *xev)
 				if (!resolve_state_action(current, action, &want))
 					continue;
 				window_set_ewmh_state(c->win, state_atoms[i], want);
+				if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION])
+					set_client_urgency_hint(c, want);
 			}
 		}
 
@@ -608,13 +821,13 @@ void hdl_client_msg(XEvent *xev)
 			update_client_desktop_properties();
 		}
 
-		if (needs_layout && c->ws == current_ws)
+		if (needs_layout && client_should_be_visible(c))
 			tile();
-		if (needs_refocus && c->ws == current_ws) {
+		if (needs_refocus && client_should_be_visible(c)) {
 			Client *next = next_focus_candidate(c);
 			set_input_focus(next, True, False);
 		}
-		else if (needs_borders && c->ws == current_ws)
+		else if (needs_borders && client_should_be_visible(c))
 			update_borders();
 		return;
 	}
@@ -676,8 +889,19 @@ void hdl_enter_ntf(XEvent *xev)
 		return;
 
 	Client *c = find_client(w);
-	if (!c || !c->mapped || c == focused || c->ws != current_ws)
+	if (!client_is_visible(c) || c == focused)
 		return;
+	activate_monitor(c->mon);
+	if (c->suppress_focus_until_sec > 0) {
+		long now = (long)time(NULL);
+		if (now <= c->suppress_focus_until_sec)
+			return;
+		c->suppress_focus_until_sec = 0;
+	}
+	if (c->suppress_enter_focus_once) {
+		c->suppress_enter_focus_once = False;
+		return;
+	}
 
 	set_input_focus(c, True, False);
 }
@@ -710,55 +934,60 @@ void hdl_destroy_ntf(XEvent *xev)
 
 			swallowed->mapped = True;
 
-			if (i == current_ws) {
-				XMapWindow(dpy, swallowed->win);
-				set_input_focus(swallowed, False, True);
-			}
+				if (monitor_views_workspace(swallowed->mon, i)) {
+					XMapWindow(dpy, swallowed->win);
+					set_input_focus(swallowed, False, True);
+				}
 			else {
 				ws_focused[i] = swallowed;
 			}
 		}
 
-		for (int ws = 0; ws < NUM_WORKSPACES; ws++)
-			if (ws_focused[ws] == c)
-				ws_focused[ws] = NULL;
+			for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
+				if (ws_focused[ws] == c)
+					ws_focused[ws] = NULL;
+			}
 
-		if (focused == c)
-			focused = NULL;
+			if (focused == c)
+				focused = NULL;
 
-		/* unlink from workspace list */
-		if (!prev)
-			workspaces[i] = c->next;
-		else
-			prev->next = c->next;
+			char ipc_details[160];
+			snprintf(ipc_details, sizeof(ipc_details), "win=0x%lx ws=%d mon=%d", (unsigned long)c->win, i + 1, c->mon);
 
-		free(c);
-		update_net_client_list();
-		if (open_windows > 0)
-			open_windows--;
+			/* unlink from workspace list */
+			if (!prev)
+				workspaces[i] = c->next;
+			else
+				prev->next = c->next;
 
-		if (i == current_ws) {
-			tile();
-			update_borders();
+			ipc_notify_event("client_remove", ipc_details);
+			free(c);
+			update_net_client_list();
+			if (open_windows > 0)
+				open_windows--;
 
-			/* prefer previous window else next */
-			Client *foc_new = NULL;
-			if (prev && prev->mapped && prev->mon == current_mon)
-				foc_new = prev;
-			else {
-				for (Client *p = workspaces[i]; p; p = p->next) {
-					if (!p->mapped || p->mon != current_mon)
-						continue;
-					foc_new = p;
-					break;
+			if (workspace_is_visible(i)) {
+				tile();
+				update_borders();
+
+				/* prefer previous window else next */
+				Client *foc_new = NULL;
+				if (prev && client_is_visible_on_monitor(prev, current_mon))
+					foc_new = prev;
+				else {
+					for (Client *p = workspaces[i]; p; p = p->next) {
+						if (!client_is_visible_on_monitor(p, current_mon))
+							continue;
+						foc_new = p;
+						break;
 				}
 			}
 
-			if (foc_new)
-				set_input_focus(foc_new, True, True);
-			else
-				set_input_focus(NULL, False, False);
-		}
+				if (foc_new)
+					set_input_focus(foc_new, True, True);
+				else
+					set_input_focus(NULL, False, False);
+			}
 
 		return;
 	}
@@ -810,16 +1039,19 @@ void hdl_map_req(XEvent *xev)
 			c->mapped = True;
 			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_HIDDEN], False);
 		}
-		if (c->ws == current_ws) {
-			if (!c->mapped) {
+			if (client_should_be_visible(c)) {
+				if (!c->mapped)
+					c->mapped = True;
 				XMapWindow(dpy, w);
-				c->mapped = True;
-			}
-			if (user_config.new_win_focus) {
-				focused = c;
-				set_input_focus(c, True, True);
+				if (user_config.new_win_focus && !c->no_focus_on_map) {
+					focused = c;
+					set_input_focus(c, True, True);
 				return; /* set_input_focus already calls update_borders */
 			}
+				if (c->no_focus_on_map) {
+					c->suppress_enter_focus_once = True;
+					c->suppress_focus_until_sec = (long)time(NULL) + 2;
+				}
 			update_borders();
 		}
 		return;
@@ -908,7 +1140,7 @@ void hdl_map_req(XEvent *xev)
 	if (!c)
 		return;
 	set_wm_state(w, NormalState);
-	c->sticky = state_sticky;
+	c->sticky = (c->sticky || state_sticky);
 	if (c->sticky)
 		window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_STICKY], True);
 
@@ -964,8 +1196,8 @@ void hdl_map_req(XEvent *xev)
 	}
 
 	update_net_client_list();
-	if (target_ws != current_ws)
-		return;
+		if (!monitor_views_workspace(c->mon, target_ws))
+			return;
 
 	/* map & borders */
 	if (!global_floating && !c->floating)
@@ -977,9 +1209,9 @@ void hdl_map_req(XEvent *xev)
 	{
 		if (window_can_be_swallowed(w)) {
 			Bool swallowed_now = False;
-			for (Client *p = workspaces[current_ws]; p; p = p->next) {
-				if (p == c || p->swallowed || !p->mapped)
-					continue;
+				for (Client *p = workspaces[current_ws]; p; p = p->next) {
+					if (p == c || p->swallowed || !client_is_visible_on_monitor(p, current_mon))
+						continue;
 
 				if (window_can_swallow(p->win) && check_parent(p->pid, c->pid)) {
 					swallow_window(p, c);
@@ -996,8 +1228,8 @@ void hdl_map_req(XEvent *xev)
 
 				for (size_t i = 0; i < LENGTH(candidates); i++) {
 					Client *cand = candidates[i];
-					if (!cand || cand == c || !cand->mapped || cand->swallowed || cand->ws != current_ws)
-						continue;
+						if (!cand || cand == c || !client_is_visible(cand) || cand->swallowed || cand->ws != current_ws)
+							continue;
 					if (!window_can_swallow(cand->win))
 						continue;
 
@@ -1021,12 +1253,17 @@ void hdl_map_req(XEvent *xev)
 			apply_fullscreen(c, True);
 	}
 	set_frame_extents(w);
+	set_allowed_actions(w);
 
-	if (user_config.new_win_focus && !c->hidden) {
+	if (user_config.new_win_focus && !c->hidden && !c->no_focus_on_map) {
 		focused = c;
 		set_input_focus(focused, True, True);
 		return;
 	}
+	if (c->no_focus_on_map) {
+		c->suppress_enter_focus_once = True;
+		c->suppress_focus_until_sec = (long)time(NULL) + 2;
+}
 	update_borders();
 }
 
@@ -1037,6 +1274,8 @@ void hdl_motion(XEvent *xev)
 	if (drag_mode == DRAG_NONE || !drag_client) {
 		if (!user_config.focus_follows_mouse || in_ws_switch)
 			return;
+
+		activate_monitor(monitor_at_point(motion_ev->x_root, motion_ev->y_root));
 
 		Window w = find_toplevel(motion_ev->window);
 		if (!w || w == root) {
@@ -1052,8 +1291,15 @@ void hdl_motion(XEvent *xev)
 			return;
 
 		Client *c = find_client(w);
-		if (!c || !c->mapped || c == focused || c->ws != current_ws)
-			return;
+			if (!client_is_visible(c) || c == focused)
+				return;
+		if ((c->suppress_enter_focus_once || c->suppress_focus_until_sec > 0) && c->no_focus_on_map) {
+			long now = (long)time(NULL);
+			if (c->suppress_focus_until_sec == 0 || now <= c->suppress_focus_until_sec)
+				return;
+			c->suppress_focus_until_sec = 0;
+			c->suppress_enter_focus_once = False;
+		}
 
 		set_input_focus(c, True, False);
 		return;
@@ -1067,19 +1313,7 @@ void hdl_motion(XEvent *xev)
 	last_motion_time = motion_ev->time;
 
 	/* figure out which monitor the pointer is in right now */
-	int mon = 0;
-	for (int i = 0; i < n_mons; i++) {
-		Bool is_current_mon =
-			motion_ev->x_root >= mons[i].x &&
-			motion_ev->x_root < mons[i].x + mons[i].w &&
-			motion_ev->y_root >= mons[i].y &&
-			motion_ev->y_root < mons[i].y + mons[i].h;
-
-		if (is_current_mon) {
-			mon = i;
-			break;
-		}
-	}
+	int mon = monitor_at_point(motion_ev->x_root, motion_ev->y_root);
 	int work_x, work_y, work_w, work_h;
 	monitor_workarea(mon, &work_x, &work_y, &work_w, &work_h);
 
@@ -1091,9 +1325,9 @@ void hdl_motion(XEvent *xev)
 
 		Client *new_target = NULL;
 
-		for (Client *c = workspaces[current_ws]; c; c = c->next) {
-			if (c == drag_client || c->floating)
-				continue;
+			for (Client *c = workspaces[current_ws]; c; c = c->next) {
+				if (c == drag_client || c->floating)
+					continue;
 			if (c->win == child) {
 				new_target = c;
 				break;
@@ -1194,6 +1428,12 @@ void hdl_property_ntf(XEvent *xev)
 		}
 	}
 
+	if (property_ev->atom == XA_WM_HINTS) {
+		Client *c = find_client(find_toplevel(property_ev->window));
+		if (c)
+			sync_urgency_from_wm_hints(c);
+	}
+
 	if ((property_ev->atom == atoms[ATOM_NET_WM_STRUT] ||
 	     property_ev->atom == atoms[ATOM_NET_WM_STRUT_PARTIAL]) &&
 	    property_ev->window != root &&
@@ -1246,25 +1486,27 @@ void hdl_property_ntf(XEvent *xev)
 
 		Bool want_above = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_ABOVE]);
 		Bool want_below = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_BELOW]);
-		if (want_above)
-			XRaiseWindow(dpy, c->win);
-		else if (want_below)
-			XLowerWindow(dpy, c->win);
+			if (want_above)
+				XRaiseWindow(dpy, c->win);
+			else if (want_below)
+				XLowerWindow(dpy, c->win);
 
-		if (relayout && c->ws == current_ws)
-			tile();
-		if (needs_refocus && c->ws == current_ws) {
-			Client *next = next_focus_candidate(c);
-			set_input_focus(next, True, False);
+			if (relayout && client_should_be_visible(c))
+				tile();
+			if (needs_refocus && client_should_be_visible(c)) {
+				Client *next = next_focus_candidate(c);
+				set_input_focus(next, True, False);
+			}
+			else if ((needs_borders || relayout) && client_should_be_visible(c))
+				update_borders();
 		}
-		else if ((needs_borders || relayout) && c->ws == current_ws)
-			update_borders();
 	}
-}
 
 void hdl_unmap_ntf(XEvent *xev)
 {
 	Window w = xev->xunmap.window;
+	Client *unmapped = NULL;
+	int unmapped_ws = -1;
 	Bool found = False;
 	for (int ws = 0; ws < NUM_WORKSPACES && !found; ws++) {
 		for (Client *c = workspaces[ws]; c; c = c->next) {
@@ -1277,9 +1519,23 @@ void hdl_unmap_ntf(XEvent *xev)
 			}
 
 			c->mapped = False;
+			unmapped = c;
+			unmapped_ws = ws;
 			found = True;
 			break;
 		}
+	}
+
+	if (unmapped) {
+		Client *replacement = first_visible_client(unmapped_ws, unmapped->mon, unmapped);
+
+		if (ws_focused[unmapped_ws] == unmapped)
+			ws_focused[unmapped_ws] = replacement;
+		if (workspace_states[unmapped_ws].focused == unmapped)
+			workspace_states[unmapped_ws].focused = replacement;
+
+		if (focused == unmapped)
+			set_input_focus(replacement, True, False);
 	}
 
 	update_net_client_list();

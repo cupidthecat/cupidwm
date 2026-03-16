@@ -21,6 +21,9 @@
 #define MAX_ITEMS            256
 #define MIN_WINDOW_SIZE      20
 #define PATH_MAX             4096
+#define STATUS_MAX_SEGMENTS  16
+#define STATUS_MAX_LABEL     128
+#define STATUS_MAX_ACTION    256
 
 #define NUM_WORKSPACES       9
 #define WORKSPACE_NAMES      \
@@ -85,13 +88,31 @@ enum {
 	LayoutDwindle = 4,
 };
 
+enum {
+	RuleMatchExact = 0,
+	RuleMatchSubstring = 1,
+	RuleMatchRegex = 2,
+};
+
 typedef struct {
 	const char *class;
 	const char *instance;
 	const char *title;
 	int workspace;          /* 0-8, -1 means current workspace */
+	int monitor;            /* monitor index, -1 means cursor monitor */
+	int x;
+	int y;
+	int w;
+	int h;
+	int scratchpad;         /* scratchpad slot, -1 means none */
+	int match_mode;         /* RuleMatch* */
+	Bool centered;
 	Bool is_floating;
 	Bool start_fullscreen;
+	Bool sticky;
+	Bool skip_taskbar;
+	Bool skip_pager;
+	Bool no_focus_on_map;
 	Bool can_swallow;
 	Bool can_be_swallowed;
 } Rule;
@@ -139,6 +160,9 @@ typedef struct Client {
 	Bool max_restore_valid;
 	Bool max_restore_floating;
 	Bool mapped;
+	Bool no_focus_on_map;
+	Bool suppress_enter_focus_once;
+	long suppress_focus_until_sec;
 	int ignore_unmap_events;
 	pid_t pid;
 	struct Client *next;
@@ -216,6 +240,8 @@ typedef struct {
 	int w, h;
 	int reserve_left, reserve_right;
 	int reserve_top, reserve_bottom;
+	int view_ws;
+	int prev_view_ws;
 	int bar_y;
 	Window barwin;
 } Monitor;
@@ -224,6 +250,13 @@ typedef struct {
 	Client *client;
 	Bool enabled;
 } Scratchpad;
+
+typedef struct {
+	int layout;
+	int gaps;
+	float master_width[MAX_MONITORS];
+	Client *focused;
+} WorkspaceState;
 
 typedef enum {
 	ATOM_NET_ACTIVE_WINDOW,
@@ -270,6 +303,20 @@ typedef enum {
 	ATOM_NET_WM_STATE_MODAL,
 	ATOM_NET_WM_STATE_ABOVE,
 	ATOM_NET_WM_STATE_BELOW,
+	ATOM_NET_MOVERESIZE_WINDOW,
+	ATOM_NET_REQUEST_FRAME_EXTENTS,
+	ATOM_NET_RESTACK_WINDOW,
+	ATOM_NET_WM_ALLOWED_ACTIONS,
+	ATOM_NET_WM_ACTION_MOVE,
+	ATOM_NET_WM_ACTION_RESIZE,
+	ATOM_NET_WM_ACTION_MINIMIZE,
+	ATOM_NET_WM_ACTION_SHADE,
+	ATOM_NET_WM_ACTION_STICK,
+	ATOM_NET_WM_ACTION_MAXIMIZE_HORZ,
+	ATOM_NET_WM_ACTION_MAXIMIZE_VERT,
+	ATOM_NET_WM_ACTION_FULLSCREEN,
+	ATOM_NET_WM_ACTION_CHANGE_DESKTOP,
+	ATOM_NET_WM_ACTION_CLOSE,
 	ATOM_WM_PROTOCOLS,
 	ATOM_COUNT
 } AtomType;
