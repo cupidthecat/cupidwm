@@ -56,13 +56,14 @@ static const int floating_on_top = 1;
 static const int new_window_master = 0;
 static const int default_gaps = 5;
 static const float master_width_default = 0.60f;
-static const int ipc_enable = 0;
+static const int ipc_enable = 1;
 static const char ipc_socket_path[] = "";
 
 /* workspaces */
 static const char *tags[NUM_WORKSPACES] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 
-/* class rules */
+/* class rules: match by class/instance/title and apply defaults on map.
+ * Use -1 for workspace/monitor/scratchpad/geometry fields to leave them unchanged. */
 static const Rule rules[] = {
 	{ .class = "pcmanfm", .workspace = -1, .monitor = -1, .scratchpad = -1,
 	  .x = -1, .y = -1, .w = -1, .h = -1,
@@ -82,7 +83,7 @@ static const Rule rules[] = {
 	{ .class = "st", .workspace = -1, .monitor = -1, .scratchpad = -1,
 	  .x = -1, .y = -1, .w = -1, .h = -1,
 	  .can_swallow = True, .match_mode = RuleMatchExact },
-	{ .title = "cupidwm-substr-nofocus", .workspace = -1, .monitor = -1, .scratchpad = -1,
+	{ .class = "cupidwm-substr-nofocus", .workspace = -1, .monitor = -1, .scratchpad = -1,
 	  .x = -1, .y = -1, .w = -1, .h = -1,
 	  .no_focus_on_map = True, .match_mode = RuleMatchSubstring },
 	{ .title = "^cupidwm-regex-utility", .workspace = -1, .monitor = -1, .scratchpad = -1,
