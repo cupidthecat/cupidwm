@@ -1220,6 +1220,7 @@ Client *add_client(Window w, int ws)
 	c->max_restore_h = 0;
 	c->mapped = True;
 	c->no_focus_on_map = False;
+	c->suppress_enter_focus_once = False;
 	c->ignore_unmap_events = 0;
 	c->custom_stack_height = 0;
 

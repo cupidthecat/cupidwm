@@ -161,6 +161,7 @@ typedef struct Client {
 	Bool max_restore_floating;
 	Bool mapped;
 	Bool no_focus_on_map;
+	Bool suppress_enter_focus_once;
 	int ignore_unmap_events;
 	pid_t pid;
 	struct Client *next;
