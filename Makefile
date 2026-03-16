@@ -40,6 +40,7 @@ preflight-test-scripts:
 	@test -f ./scripts/smoke-xephyr.sh || { echo "missing required script: ./scripts/smoke-xephyr.sh"; exit 1; }
 	@test -f ./scripts/install-deps.sh || { echo "missing required script: ./scripts/install-deps.sh"; exit 1; }
 	@test -f ./tests/ewmh/invariants.sh || { echo "missing required script: ./tests/ewmh/invariants.sh"; exit 1; }
+	@test -f ./tests/ewmh/send-client-message.c || { echo "missing required file: ./tests/ewmh/send-client-message.c"; exit 1; }
 
 test-smoke: preflight-test-scripts cupidwm
 	bash ./scripts/smoke-xephyr.sh ./cupidwm
@@ -55,6 +56,16 @@ lint:
 	else \
 		echo "cppcheck not found; skipping static analysis"; \
 	fi
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		files=$$(find scripts tests -type f -name '*.sh'); \
+		if [ -n "$$files" ]; then \
+			shellcheck -x $$files; \
+		else \
+			echo "no shell scripts found for shellcheck"; \
+		fi; \
+	else \
+		echo "shellcheck not found; skipping shell script analysis"; \
+	fi
 
 check: debug lint
 	@if [ -n "$$DISPLAY" ] && \
@@ -64,8 +75,19 @@ check: debug lint
 		command -v xdotool >/dev/null 2>&1 && \
 		command -v xterm >/dev/null 2>&1 && \
 		command -v xwininfo >/dev/null 2>&1; then \
-		${MAKE} --no-print-directory test-smoke; \
+		${MAKE} --no-print-directory test-smoke && \
 		${MAKE} --no-print-directory test-ewmh; \
+	elif [ -z "$$DISPLAY" ] && \
+		command -v xvfb-run >/dev/null 2>&1 && \
+		command -v Xephyr >/dev/null 2>&1 && \
+		command -v xdpyinfo >/dev/null 2>&1 && \
+		command -v xprop >/dev/null 2>&1 && \
+		command -v xdotool >/dev/null 2>&1 && \
+		command -v xterm >/dev/null 2>&1 && \
+		command -v xwininfo >/dev/null 2>&1; then \
+		echo "DISPLAY not set; running integration suites under xvfb-run"; \
+		xvfb-run -a ${MAKE} --no-print-directory test-smoke && \
+		xvfb-run -a ${MAKE} --no-print-directory test-ewmh; \
 	else \
 		echo "Smoke test skipped (missing DISPLAY or Xephyr/x11 test dependencies)"; \
 	fi

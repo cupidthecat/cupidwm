@@ -91,7 +91,9 @@ static const char *termcmd[] = { "/bin/sh", "-lc", "cd \"$HOME\" && exec st", NU
 static const char *dmenucmd[] = { "dmenu_run", NULL };
 static const char *browsercmd[] = { "firefox", NULL };
 
-static const char *autostart_shell_0[] = { "sh", "-c", "xsetroot -cursor_name left_ptr", NULL };
+static const char *autostart_shell_0[] = {
+	"sh", "-c", "command -v xsetroot >/dev/null 2>&1 && xsetroot -cursor_name left_ptr", NULL
+};
 static const char *const *autostart[] = {
 	autostart_shell_0,
 	NULL,

@@ -2,6 +2,9 @@
 set -euo pipefail
 
 fail() {
+	if [ -n "${LOG_DIR:-}" ]; then
+		printf 'ewmh test failed: %s\n' "$*" >"${LOG_DIR}/failure.log" 2>/dev/null || true
+	fi
 	echo "ewmh test failed: $*" >&2
 	exit 1
 }
@@ -22,7 +25,24 @@ assert_prop_contains() {
 	else
 		out="$(xprop -id "$target" "$prop" 2>/dev/null || true)"
 	fi
-	echo "$out" | grep -q "$expect" || fail "$prop missing expected token '$expect'"
+	if ! echo "$out" | grep -q "$expect"; then
+		fail "$prop missing expected token '$expect' (got: $out)"
+	fi
+}
+
+assert_prop_not_contains() {
+	local target="$1"
+	local prop="$2"
+	local reject="$3"
+	local out=""
+	if [ "$target" = "root" ]; then
+		out="$(xprop -root "$prop" 2>/dev/null || true)"
+	else
+		out="$(xprop -id "$target" "$prop" 2>/dev/null || true)"
+	fi
+	if echo "$out" | grep -q "$reject"; then
+		fail "$prop unexpectedly contains '$reject' (got: $out)"
+	fi
 }
 
 assert_int_eq() {

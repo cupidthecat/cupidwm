@@ -62,6 +62,9 @@ Built-in fallback sections are controlled via:
 - `status_section_order` and `status_separator`
 - `status_*_label` and formatting options
 
+CPU/RAM/battery fallback probes are Linux-specific (`/proc`, `/sys`); on non-Linux
+platforms those sections are omitted automatically.
+
 Optional external provider (disabled by default):
 
 - `status_allow_external_cmd`
@@ -69,6 +72,7 @@ Optional external provider (disabled by default):
 
 When enabled, the external command is executed and its first output line is used
 as status text when root-name status is empty.
+Treat this as shell command execution in your session context.
 
 ## IPC Options
 
@@ -78,3 +82,4 @@ Optional UNIX socket IPC (disabled by default):
 - `ipc_socket_path`
 
 Use `cupidwmctl` to send commands when IPC is enabled. See [docs/ipc.md](ipc.md).
+Use `cupidwm --print-ipc-socket` to view the resolved socket path.

@@ -108,31 +108,32 @@ case "$family" in
 arch)
 	build_pkgs=(
 		xorg-server xorg-xinit base-devel pkgconf
-		libx11 libxinerama libxcursor libxft fontconfig freetype2
+		libx11 libxinerama libxrandr libxcursor libxft fontconfig freetype2
 	)
 	smoke_pkgs=(
-		xorg-server-xephyr xorg-xdpyinfo xorg-xprop xorg-xwininfo
+		xorg-server-xephyr xorg-xdpyinfo xorg-xprop xorg-xwininfo xorg-xsetroot
+		xorg-server-xvfb
 		xdotool xterm gawk sed grep
 	)
 	;;
 debian)
 	build_pkgs=(
 		xorg xinit build-essential pkg-config
-		libx11-dev libxinerama-dev libxcursor-dev
+		libx11-dev libxinerama-dev libxrandr-dev libxcursor-dev
 		libxft-dev libfontconfig-dev libfreetype6-dev
 	)
 	smoke_pkgs=(
-		xserver-xephyr x11-utils xdotool xterm gawk sed grep
+		xserver-xephyr xvfb x11-utils x11-xserver-utils xdotool xterm gawk sed grep
 	)
 	;;
 fedora)
 	build_pkgs=(
 		xorg-x11-server-Xorg xorg-x11-xinit gcc make pkgconf-pkg-config
-		libX11-devel libXinerama-devel libXcursor-devel
+		libX11-devel libXinerama-devel libXrandr-devel libXcursor-devel
 		libXft-devel fontconfig-devel freetype-devel
 	)
 	smoke_pkgs=(
-		xorg-x11-server-Xephyr xorg-x11-utils xdpyinfo
+		xorg-x11-server-Xephyr xorg-x11-server-Xvfb xorg-x11-utils xorg-x11-server-utils xdpyinfo
 		xdotool xterm gawk sed grep
 	)
 	;;

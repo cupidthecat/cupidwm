@@ -306,12 +306,13 @@ void toggle_floating(void)
 			focused->w = wa.width;
 			focused->h = wa.height;
 
-			XConfigureWindow(dpy, focused->win, CWX | CWY | CWWidth | CWHeight, &(XWindowChanges){
-					.x = focused->x,
-					.y = focused->y,
-					.width = focused->w,
-					.height = focused->h
-			});
+			XWindowChanges wc = {
+				.x = focused->x,
+				.y = focused->y,
+				.width = focused->w,
+				.height = focused->h
+			};
+			XConfigureWindow(dpy, focused->win, CWX | CWY | CWWidth | CWHeight, &wc);
 		}
 	}
 	else {
@@ -349,8 +350,13 @@ void toggle_floating_global(void)
 					c->w = wa.width;
 					c->h = wa.height;
 
-					XConfigureWindow(dpy, c->win, CWX | CWY | CWWidth | CWHeight,
-					             &(XWindowChanges){.x = c->x, .y = c->y, .width = c->w, .height = c->h});
+					XWindowChanges wc = {
+						.x = c->x,
+						.y = c->y,
+						.width = c->w,
+						.height = c->h
+					};
+					XConfigureWindow(dpy, c->win, CWX | CWY | CWWidth | CWHeight, &wc);
 				}
 				XRaiseWindow(dpy, c->win);
 			}

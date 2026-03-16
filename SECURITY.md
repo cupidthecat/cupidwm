@@ -31,4 +31,9 @@ shipping patched packages.
 - Sanitizer builds (`make debug`) are for testing, not production deployment.
 - Run `make check` before release tagging.
 - Keep `status_allow_external_cmd` disabled unless you trust the configured command.
+- `status_external_cmd` is executed through `popen(3)` (shell execution). Treat it as
+  code execution in your session context.
+- If you enable external status commands, use explicit absolute paths and avoid
+  untrusted input expansion.
 - Keep `ipc_enable` disabled unless you need local control via `cupidwmctl`.
+- IPC sockets are created with mode `0600`; prefer paths in `$XDG_RUNTIME_DIR`.

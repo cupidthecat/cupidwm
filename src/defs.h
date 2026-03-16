@@ -120,6 +120,7 @@ typedef struct Client {
 	Window win;
 	int x, y, h, w;
 	int orig_x, orig_y, orig_w, orig_h;
+	int max_restore_x, max_restore_y, max_restore_w, max_restore_h;
 	int custom_stack_height;
 	int mon;
 	int ws;
@@ -127,7 +128,15 @@ typedef struct Client {
 	Bool floating;
 	Bool prev_floating;
 	Bool floating_saved;
+	Bool modal_forced_floating;
 	Bool fullscreen;
+	Bool hidden;
+	Bool sticky;
+	Bool maximized_horz;
+	Bool maximized_vert;
+	Bool max_forced_floating;
+	Bool max_restore_valid;
+	Bool max_restore_floating;
 	Bool mapped;
 	int ignore_unmap_events;
 	pid_t pid;
@@ -221,6 +230,15 @@ typedef enum {
 	ATOM_NET_SUPPORTED,
 	ATOM_NET_WM_STATE,
 	ATOM_NET_WM_STATE_FULLSCREEN,
+	ATOM_NET_WM_STATE_STICKY,
+	ATOM_NET_WM_STATE_MAXIMIZED_VERT,
+	ATOM_NET_WM_STATE_MAXIMIZED_HORZ,
+	ATOM_NET_WM_STATE_SHADED,
+	ATOM_NET_WM_STATE_SKIP_TASKBAR,
+	ATOM_NET_WM_STATE_SKIP_PAGER,
+	ATOM_NET_WM_STATE_HIDDEN,
+	ATOM_NET_WM_STATE_DEMANDS_ATTENTION,
+	ATOM_NET_WM_STATE_FOCUSED,
 	ATOM_WM_STATE,
 	ATOM_NET_WM_WINDOW_TYPE,
 	ATOM_NET_WORKAREA,
@@ -229,6 +247,7 @@ typedef enum {
 	ATOM_NET_WM_STRUT_PARTIAL,
 	ATOM_NET_SUPPORTING_WM_CHECK,
 	ATOM_NET_WM_NAME,
+	ATOM_NET_CLOSE_WINDOW,
 	ATOM_UTF8_STRING,
 	ATOM_NET_WM_DESKTOP,
 	ATOM_NET_CLIENT_LIST,
@@ -248,6 +267,8 @@ typedef enum {
 	ATOM_NET_WM_WINDOW_TYPE_TOOLTIP,
 	ATOM_NET_WM_WINDOW_TYPE_NOTIFICATION,
 	ATOM_NET_WM_STATE_MODAL,
+	ATOM_NET_WM_STATE_ABOVE,
+	ATOM_NET_WM_STATE_BELOW,
 	ATOM_WM_PROTOCOLS,
 	ATOM_COUNT
 } AtomType;

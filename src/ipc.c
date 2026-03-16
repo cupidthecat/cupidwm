@@ -1,15 +1,167 @@
 /* Optional local UNIX socket IPC server for cupidwmctl. */
 
+#define IPC_SOCKET_ROOT_PROPERTY "_CUPIDWM_IPC_SOCKET"
+
 static int ipc_server_fd = -1;
 static char ipc_socket_path_buf[PATH_MAX] = {0};
+static char ipc_socket_hint_path_buf[PATH_MAX] = {0};
+
+static void ipc_display_token(char *out, size_t outsz)
+{
+	if (!out || outsz == 0)
+		return;
+
+	out[0] = '\0';
+	const char *display = getenv("DISPLAY");
+	if (!display || !display[0])
+		return;
+
+	size_t j = 0;
+	for (size_t i = 0; display[i] && j < outsz - 1; i++) {
+		unsigned char ch = (unsigned char)display[i];
+		if ((ch >= 'a' && ch <= 'z') ||
+		    (ch >= 'A' && ch <= 'Z') ||
+		    (ch >= '0' && ch <= '9') ||
+		    ch == '-' || ch == '_')
+			out[j++] = (char)ch;
+		else
+			out[j++] = '_';
+	}
+	out[j] = '\0';
+}
+
+static void ipc_hint_path(char *out, size_t outsz)
+{
+	if (!out || outsz == 0)
+		return;
+
+	out[0] = '\0';
+	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+	if (!runtime_dir || !runtime_dir[0])
+		return;
+
+	size_t n = strlen(runtime_dir);
+	while (n > 1 && runtime_dir[n - 1] == '/')
+		n--;
+
+	char display_tok[64] = {0};
+	ipc_display_token(display_tok, sizeof(display_tok));
+	if (display_tok[0])
+		snprintf(out, outsz, "%.*s/cupidwm-%s.sockpath", (int)n, runtime_dir, display_tok);
+	else
+		snprintf(out, outsz, "%.*s/cupidwm.sockpath", (int)n, runtime_dir);
+}
+
+static void ipc_write_hint_file(const char *socket_path)
+{
+	if (!socket_path || !socket_path[0])
+		return;
+
+	char hint_path[PATH_MAX] = {0};
+	ipc_hint_path(hint_path, sizeof(hint_path));
+	if (!hint_path[0])
+		return;
+
+	int fd = open(hint_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return;
+
+	size_t len = strlen(socket_path);
+	size_t sent = 0;
+	while (sent < len) {
+		ssize_t w = write(fd, socket_path + sent, len - sent);
+		if (w < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		if (w == 0)
+			break;
+		sent += (size_t)w;
+	}
+
+	char nl = '\n';
+	for (;;) {
+		ssize_t w = write(fd, &nl, 1);
+		if (w < 0) {
+			if (errno == EINTR)
+				continue;
+		}
+		break;
+	}
+	close(fd);
+
+	snprintf(ipc_socket_hint_path_buf, sizeof(ipc_socket_hint_path_buf), "%s", hint_path);
+}
+
+const char *ipc_resolve_socket_path(const char *configured_path, char *out, size_t outsz)
+{
+	if (!out || outsz == 0)
+		return NULL;
+
+	out[0] = '\0';
+	if (configured_path && configured_path[0]) {
+		snprintf(out, outsz, "%s", configured_path);
+		return out;
+	}
+
+	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+	char display_tok[64] = {0};
+	ipc_display_token(display_tok, sizeof(display_tok));
+	if (runtime_dir && runtime_dir[0]) {
+		size_t n = strlen(runtime_dir);
+		while (n > 1 && runtime_dir[n - 1] == '/')
+			n--;
+		if (display_tok[0])
+			snprintf(out, outsz, "%.*s/cupidwm-%s.sock", (int)n, runtime_dir, display_tok);
+		else
+			snprintf(out, outsz, "%.*s/cupidwm.sock", (int)n, runtime_dir);
+		return out;
+	}
+
+	if (display_tok[0])
+		snprintf(out, outsz, "/tmp/cupidwm-%u-%s.sock", (unsigned)getuid(), display_tok);
+	else
+		snprintf(out, outsz, "/tmp/cupidwm-%u.sock", (unsigned)getuid());
+	return out;
+}
+
+static void ipc_publish_socket_path(const char *path)
+{
+	if (!dpy || root == None)
+		return;
+
+	Atom prop = XInternAtom(dpy, IPC_SOCKET_ROOT_PROPERTY, False);
+	if (prop == None)
+		return;
+
+	if (path && path[0]) {
+		XChangeProperty(dpy, root, prop, XA_STRING, 8, PropModeReplace,
+		                (unsigned char *)path, (int)strlen(path));
+	}
+	else {
+		XDeleteProperty(dpy, root, prop);
+	}
+}
 
 static void ipc_write_reply(int fd, const char *msg)
 {
 	if (fd < 0 || !msg)
 		return;
 
-	ssize_t wrote = write(fd, msg, strlen(msg));
-	(void)wrote;
+	size_t len = strlen(msg);
+	size_t sent = 0;
+	while (sent < len) {
+		ssize_t n = write(fd, msg + sent, len - sent);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			return;
+		}
+		if (n == 0)
+			return;
+		sent += (size_t)n;
+	}
 }
 
 static void ipc_trim(char *s)
@@ -45,6 +197,17 @@ static int ipc_set_cloexec(int fd)
 	if (flags < 0)
 		return -1;
 	return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+static int ipc_set_recv_timeout(int fd, int timeout_ms)
+{
+	if (fd < 0 || timeout_ms < 0)
+		return -1;
+
+	struct timeval tv;
+	tv.tv_sec = timeout_ms / 1000;
+	tv.tv_usec = (timeout_ms % 1000) * 1000;
+	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
 static void ipc_reply_status(int client_fd)
@@ -206,20 +369,61 @@ void ipc_handle_connection(void)
 		}
 
 		ipc_set_cloexec(client_fd);
-		ipc_set_nonblock(client_fd);
+		ipc_set_recv_timeout(client_fd, 200);
 
 		char buf[512];
-		ssize_t n = read(client_fd, buf, sizeof(buf) - 1);
-		if (n <= 0) {
+		size_t used = 0;
+		Bool truncated = False;
+		for (;;) {
+			if (used >= sizeof(buf) - 1) {
+				truncated = True;
+				break;
+			}
+
+			ssize_t n = read(client_fd, buf + used, sizeof(buf) - 1 - used);
+			if (n > 0) {
+				used += (size_t)n;
+				if (memchr(buf, '\n', used) || memchr(buf, '\r', used))
+					break;
+				continue;
+			}
+
+			if (n == 0)
+				break;
+
+			if (errno == EINTR)
+				continue;
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				if (used > 0)
+					break;
+				ipc_write_reply(client_fd, "error read timeout\n");
+				close(client_fd);
+				goto next_client;
+			}
+
 			ipc_write_reply(client_fd, "error failed to read command\n");
 			close(client_fd);
-			continue;
+			goto next_client;
 		}
 
-		buf[n] = '\0';
+		if (truncated) {
+			ipc_write_reply(client_fd, "error command too long\n");
+			close(client_fd);
+			goto next_client;
+		}
+
+		if (used == 0) {
+			ipc_write_reply(client_fd, "error empty command\n");
+			close(client_fd);
+			goto next_client;
+		}
+
+		buf[used] = '\0';
 		ipc_trim(buf);
 		ipc_dispatch(client_fd, buf);
 		close(client_fd);
+next_client:
+		;
 	}
 }
 
@@ -236,8 +440,14 @@ void ipc_cleanup(void)
 	}
 
 	if (ipc_socket_path_buf[0]) {
+		ipc_publish_socket_path(NULL);
 		unlink(ipc_socket_path_buf);
 		ipc_socket_path_buf[0] = '\0';
+	}
+
+	if (ipc_socket_hint_path_buf[0]) {
+		unlink(ipc_socket_hint_path_buf);
+		ipc_socket_hint_path_buf[0] = '\0';
 	}
 }
 
@@ -249,16 +459,8 @@ int ipc_setup(void)
 		return ipc_server_fd;
 
 	char socket_path[PATH_MAX] = {0};
-	if (user_config.ipc_socket_path && user_config.ipc_socket_path[0]) {
-		snprintf(socket_path, sizeof(socket_path), "%s", user_config.ipc_socket_path);
-	}
-	else {
-		const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
-		if (runtime_dir && runtime_dir[0])
-			snprintf(socket_path, sizeof(socket_path), "%s/cupidwm.sock", runtime_dir);
-		else
-			snprintf(socket_path, sizeof(socket_path), "/tmp/cupidwm-%u.sock", (unsigned)getuid());
-	}
+	if (!ipc_resolve_socket_path(user_config.ipc_socket_path, socket_path, sizeof(socket_path)))
+		return -1;
 
 	struct sockaddr_un addr;
 	memset(&addr, 0, sizeof(addr));
@@ -307,6 +509,8 @@ int ipc_setup(void)
 
 	ipc_server_fd = fd;
 	snprintf(ipc_socket_path_buf, sizeof(ipc_socket_path_buf), "%s", socket_path);
+	ipc_write_hint_file(ipc_socket_path_buf);
+	ipc_publish_socket_path(ipc_socket_path_buf);
 	fprintf(stderr, "cupidwm: ipc enabled on %s\n", ipc_socket_path_buf);
 	return ipc_server_fd;
 }
