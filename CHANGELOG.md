@@ -40,6 +40,9 @@
 - Expanded monitor discovery to prefer RandR monitor objects, then RandR CRTCs, with geometry dedupe before Xinerama fallback.
 - Fixed `make check` failure propagation so integration subtarget failures now stop the overall check target.
 - Hardened smoke coverage for unmap persistence by validating explicit unmap on a visible window across workspace switches.
+- Made default autostart cursor setup resilient when `xsetroot` is not installed.
+- Added `xsetroot` packages to CI and dependency installer smoke-tool sets.
+- Added explicit workspace-state waits in smoke tests before scratchpad assertions to reduce CI timing races.
 
 ## 2026-03-15
 

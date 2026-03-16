@@ -143,6 +143,17 @@ root_current_desktop() {
 	xprop -root _NET_CURRENT_DESKTOP 2>/dev/null | awk -F' = ' '/_NET_CURRENT_DESKTOP/{gsub(/[[:space:]]/, "", $2); print $2; exit}'
 }
 
+wait_current_desktop() {
+	local want="$1"
+	for _ in $(seq 1 100); do
+		if [ "$(root_current_desktop)" = "${want}" ]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
 window_desktop() {
 	local wid="$1"
 	xprop -id "${wid}" _NET_WM_DESKTOP 2>/dev/null | awk -F' = ' '/_NET_WM_DESKTOP/{gsub(/[[:space:]]/, "", $2); print $2; exit}'
@@ -238,10 +249,12 @@ sleep 0.25
 wait_invisible_id "${wid_a}" || fail "visible window did not unmap"
 send_key "super+1"
 send_key "super+3"
+wait_current_desktop "2" || fail "workspace switch to 3 before remap check failed"
 wait_invisible_id "${wid_a}" || fail "explicit unmap state was lost on workspace switch"
 xdotool windowmap "${wid_a}" >/dev/null 2>&1 || fail "failed to remap explicitly unmapped window"
 wait_visible_id "${wid_a}" >/dev/null || fail "remapped explicitly unmapped window did not become visible"
 send_key "super+1"
+wait_current_desktop "0" || fail "workspace switch to 1 before scratch tests failed"
 
 spawn_xterm "scratch" -title "scratch-one" -class st -geometry 80x24+180+80
 wid_sp="$(wait_visible_window_by_name '^scratch-one$' || true)"
