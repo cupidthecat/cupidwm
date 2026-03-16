@@ -166,3 +166,4 @@ For built-in bar tabs (outside IPC), default mouse behavior is:
 - Prefer paths under `$XDG_RUNTIME_DIR` and avoid world-accessible directories.
 - The `/tmp` fallback refuses directories or socket paths it does not own.
 - IPC read handling uses a short socket receive timeout to avoid event-loop stalls from hung clients.
+- Each accepted client socket is marked nonblocking and must supply a newline-terminated command before the WM loop processes it; incomplete or slow commands now result in an error reply so the event loop stays responsive.

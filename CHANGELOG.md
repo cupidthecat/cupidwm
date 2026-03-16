@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-03-17
+
+- Hardened IPC client handling so accepted sockets are nonblocking, require newline-terminated commands, and fail fast when no command is available to prevent hung clients from stalling the WM loop.
+- External status commands now run inside a helper process, only the first line is consumed, and the helper is killed after ~200 ms if no output arrives; prefer feeding updates via `CUPIDWM_BAR_FIFO` instead of relying on long-running status scripts.
+
 ## 2026-03-16
 
 - Reworked workspace viewing to be monitor-local so each monitor now keeps its
