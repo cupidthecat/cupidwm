@@ -170,6 +170,20 @@ root_active_window() {
 	}'
 }
 
+wait_active_window() {
+	local want="$1"
+	for _ in $(seq 1 100); do
+		local got=""
+		got="$(root_active_window || true)"
+		if [ -n "${got}" ] && [ "${got}" = "${want}" ]; then
+			echo "${got}"
+			return 0
+		fi
+		sleep 0.05
+	done
+	return 1
+}
+
 wait_current_desktop() {
 	local want="$1"
 	for _ in $(seq 1 100); do
@@ -263,7 +277,8 @@ wait_visible_id "${wid_a}" >/dev/null || fail "workspace test window is not view
 
 focus_window "${wid_a}"
 sleep 0.1
-active_before_rule="$(root_active_window || true)"
+wid_a_hex="0x$(printf '%x' "${wid_a}")"
+active_before_rule="$(wait_active_window "${wid_a_hex}" || true)"
 
 spawn_xterm "rule-substr-nofocus" -title "my-cupidwm-substr-nofocus-window" -class st -geometry 80x24+120+120
 pid_rule="${last_spawn_pid}"
@@ -272,8 +287,7 @@ wid_rule="$(wait_visible_window_by_pid "${pid_rule}" || wait_visible_window_by_n
 wait_visible_id "${wid_rule}" >/dev/null || fail "rule no-focus test window is not viewable"
 
 sleep 0.2
-active_after_rule="$(root_active_window || true)"
-wid_a_hex="0x$(printf '%x' "${wid_a}")"
+active_after_rule="$(wait_active_window "${wid_a_hex}" || true)"
 [ -n "${active_before_rule}" ] || fail "could not read active window before rule no-focus test"
 [ "${active_before_rule}" = "${wid_a_hex}" ] || fail "unexpected active window before rule no-focus test"
 [ "${active_after_rule}" = "${wid_a_hex}" ] || fail "no-focus rule did not preserve active window focus"
