@@ -38,6 +38,7 @@ done
 
 xephyr_pid=""
 wm_pid=""
+last_spawn_pid=""
 declare -a app_pids=()
 
 cleanup() {
@@ -56,6 +57,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 fail() {
+	printf 'smoke test failed: %s\n' "$*" >"${LOG_DIR}/failure.log" 2>/dev/null || true
 	echo "smoke test failed: $*" >&2
 	echo "xephyr log: ${LOG_DIR}/xephyr.log" >&2
 	echo "wm log: ${LOG_DIR}/wm.log" >&2
@@ -139,6 +141,23 @@ wait_visible_window_by_name() {
 	return 1
 }
 
+wait_visible_window_by_pid() {
+	local pid="$1"
+	local wid=""
+	for _ in $(seq 1 100); do
+		if ! kill -0 "${pid}" 2>/dev/null; then
+			return 1
+		fi
+		wid="$(xdotool search --onlyvisible --pid "${pid}" 2>/dev/null | head -n1 || true)"
+		if [ -n "${wid}" ]; then
+			echo "${wid}"
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
 root_current_desktop() {
 	xprop -root _NET_CURRENT_DESKTOP 2>/dev/null | awk -F' = ' '/_NET_CURRENT_DESKTOP/{gsub(/[[:space:]]/, "", $2); print $2; exit}'
 }
@@ -191,7 +210,8 @@ spawn_xterm() {
 	local tag="$1"
 	shift
 	xterm "$@" >"${LOG_DIR}/xterm-${tag}.log" 2>&1 &
-	app_pids+=("$!")
+	last_spawn_pid="$!"
+	app_pids+=("${last_spawn_pid}")
 }
 
 launch_xephyr() {
@@ -228,7 +248,8 @@ xprop -root _NET_CLIENT_LIST_STACKING >"${LOG_DIR}/client-list-stacking-init.log
 grep -q "_NET_CLIENT_LIST_STACKING" "${LOG_DIR}/client-list-stacking-init.log" || fail "_NET_CLIENT_LIST_STACKING missing"
 
 spawn_xterm "ws-a" -title "ws-a" -class st -geometry 80x24+50+50
-wid_a="$(wait_visible_window_by_name '^ws-a$' || true)"
+pid_a="${last_spawn_pid}"
+wid_a="$(wait_visible_window_by_pid "${pid_a}" || wait_visible_window_by_name '^ws-a$' || true)"
 [ -n "${wid_a}" ] || fail "workspace test window did not appear"
 wait_visible_id "${wid_a}" >/dev/null || fail "workspace test window is not viewable"
 
@@ -257,7 +278,8 @@ send_key "super+1"
 wait_current_desktop "0" || fail "workspace switch to 1 before scratch tests failed"
 
 spawn_xterm "scratch" -title "scratch-one" -class st -geometry 80x24+180+80
-wid_sp="$(wait_visible_window_by_name '^scratch-one$' || true)"
+pid_sp="${last_spawn_pid}"
+wid_sp="$(wait_visible_window_by_pid "${pid_sp}" || wait_visible_window_by_name '^scratch-one$' || true)"
 [ -n "${wid_sp}" ] || fail "scratchpad test window did not appear"
 focus_window "${wid_sp}"
 send_key "super+alt+1"
@@ -266,7 +288,8 @@ send_key "super+ctrl+1"
 wait_visible_id "${wid_sp}" >/dev/null || fail "scratchpad toggle restore failed"
 
 spawn_xterm "scratch-replace" -title "scratch-two" -class st -geometry 80x24+220+120
-wid_sp2="$(wait_visible_window_by_name '^scratch-two$' || true)"
+pid_sp2="${last_spawn_pid}"
+wid_sp2="$(wait_visible_window_by_pid "${pid_sp2}" || wait_visible_window_by_name '^scratch-two$' || true)"
 [ -n "${wid_sp2}" ] || fail "scratchpad replacement window did not appear"
 focus_window "${wid_sp2}"
 send_key "super+alt+1"
@@ -280,12 +303,14 @@ wait_visible_id "${wid_sp}" >/dev/null || fail "scratchpad interactability regre
 
 send_key "super+1"
 spawn_xterm "swallower" -title "swallower" -class st -geometry 80x24+300+130
-wid_sw="$(wait_visible_window_by_name '^swallower$' || true)"
+pid_sw="${last_spawn_pid}"
+wid_sw="$(wait_visible_window_by_pid "${pid_sw}" || wait_visible_window_by_name '^swallower$' || true)"
 [ -n "${wid_sw}" ] || fail "swallow swallower window did not appear"
 focus_window "${wid_sw}"
 
 spawn_xterm "swallow-target" -title "swallow-target" -class thunar -geometry 80x24+360+180
-wid_tg="$(wait_visible_window_by_name '^swallow-target$' || true)"
+pid_tg="${last_spawn_pid}"
+wid_tg="$(wait_visible_window_by_pid "${pid_tg}" || wait_visible_window_by_name '^swallow-target$' || true)"
 [ -n "${wid_tg}" ] || fail "swallow target window did not appear"
 
 swallowed_ok=0
