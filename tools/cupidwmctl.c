@@ -10,18 +10,140 @@
 
 static void usage(const char *argv0)
 {
-	fprintf(stderr, "usage: %s [-s /path/to/cupidwm.sock] <command...>\n", argv0);
+	fprintf(stderr, "usage: %s [options] <command...>\n", argv0);
+	fprintf(stderr, "  -s <path>               Use explicit IPC socket path\n");
+	fprintf(stderr, "  --print-socket          Print resolved IPC socket path and exit\n");
+	fprintf(stderr, "  -h, --help              Show this help text\n");
+}
+
+static void display_token(char *out, size_t outsz)
+{
+	if (!out || outsz == 0)
+		return;
+
+	out[0] = '\0';
+	const char *display = getenv("DISPLAY");
+	if (!display || !display[0])
+		return;
+
+	size_t j = 0;
+	for (size_t i = 0; display[i] && j < outsz - 1; i++) {
+		unsigned char ch = (unsigned char)display[i];
+		if ((ch >= 'a' && ch <= 'z') ||
+		    (ch >= 'A' && ch <= 'Z') ||
+		    (ch >= '0' && ch <= '9') ||
+		    ch == '-' || ch == '_')
+			out[j++] = (char)ch;
+		else
+			out[j++] = '_';
+	}
+	out[j] = '\0';
 }
 
 static void default_socket_path(char *out, size_t outsz)
 {
 	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+	char display_tok[64] = {0};
+	display_token(display_tok, sizeof(display_tok));
 	if (runtime_dir && runtime_dir[0]) {
-		snprintf(out, outsz, "%s/cupidwm.sock", runtime_dir);
+		size_t n = strlen(runtime_dir);
+		while (n > 1 && runtime_dir[n - 1] == '/')
+			n--;
+		if (display_tok[0])
+			snprintf(out, outsz, "%.*s/cupidwm-%s.sock", (int)n, runtime_dir, display_tok);
+		else
+			snprintf(out, outsz, "%.*s/cupidwm.sock", (int)n, runtime_dir);
 		return;
 	}
 
-	snprintf(out, outsz, "/tmp/cupidwm-%u.sock", (unsigned)getuid());
+	if (display_tok[0])
+		snprintf(out, outsz, "/tmp/cupidwm-%u-%s.sock", (unsigned)getuid(), display_tok);
+	else
+		snprintf(out, outsz, "/tmp/cupidwm-%u.sock", (unsigned)getuid());
+}
+
+static void hint_path(char *out, size_t outsz, const char *display_tok)
+{
+	if (!out || outsz == 0)
+		return;
+
+	out[0] = '\0';
+	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+	if (!runtime_dir || !runtime_dir[0])
+		return;
+
+	size_t n = strlen(runtime_dir);
+	while (n > 1 && runtime_dir[n - 1] == '/')
+		n--;
+
+	if (display_tok && display_tok[0])
+		snprintf(out, outsz, "%.*s/cupidwm-%s.sockpath", (int)n, runtime_dir, display_tok);
+	else
+		snprintf(out, outsz, "%.*s/cupidwm.sockpath", (int)n, runtime_dir);
+}
+
+static int read_socket_hint_file(const char *path, char *out, size_t outsz)
+{
+	if (!path || !path[0] || !out || outsz == 0)
+		return 0;
+
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return 0;
+	if (!fgets(out, (int)outsz, f)) {
+		fclose(f);
+		out[0] = '\0';
+		return 0;
+	}
+	fclose(f);
+
+	size_t n = strlen(out);
+	while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ' || out[n - 1] == '\t')) {
+		out[n - 1] = '\0';
+		n--;
+	}
+	while (*out == ' ' || *out == '\t')
+		memmove(out, out + 1, strlen(out));
+	return out[0] != '\0';
+}
+
+static int read_socket_hint(char *out, size_t outsz)
+{
+	if (!out || outsz == 0)
+		return 0;
+
+	char display_tok[64] = {0};
+	char path[PATH_MAX] = {0};
+	display_token(display_tok, sizeof(display_tok));
+
+	if (display_tok[0]) {
+		hint_path(path, sizeof(path), display_tok);
+		if (read_socket_hint_file(path, out, outsz))
+			return 1;
+	}
+
+	hint_path(path, sizeof(path), "");
+	if (read_socket_hint_file(path, out, outsz))
+		return 1;
+
+	return 0;
+}
+
+static void resolve_socket_path(char *out, size_t outsz)
+{
+	if (!out || outsz == 0)
+		return;
+
+	const char *env_path = getenv("CUPIDWM_IPC_SOCKET");
+	if (env_path && env_path[0]) {
+		snprintf(out, outsz, "%s", env_path);
+		return;
+	}
+
+	if (read_socket_hint(out, outsz))
+		return;
+
+	default_socket_path(out, outsz);
 }
 
 static int connect_socket(const char *path)
@@ -62,23 +184,47 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (strcmp(argv[1], "-s") == 0) {
-		if (argc < 4) {
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
 			usage(argv[0]);
-			return 1;
+			return 0;
 		}
-		socket_path = argv[2];
-		cmd_start = 3;
+
+		if (strcmp(argv[i], "--print-socket") == 0 || strcmp(argv[i], "--print-default-socket") == 0) {
+			char default_sock[PATH_MAX];
+			resolve_socket_path(default_sock, sizeof(default_sock));
+			puts(default_sock);
+			return 0;
+		}
+
+		if (strcmp(argv[i], "-s") == 0) {
+			if (i + 1 >= argc) {
+				usage(argv[0]);
+				return 1;
+			}
+			socket_path = argv[i + 1];
+			cmd_start = i + 2;
+			i++;
+			continue;
+		}
+
+		cmd_start = i;
+		break;
 	}
 
 	if (cmd_start >= argc) {
+		if (socket_path) {
+			usage(argv[0]);
+			return 1;
+		}
+
 		fprintf(stderr, "cupidwmctl: missing command\n");
 		return 1;
 	}
 
 	char default_sock[PATH_MAX];
 	if (!socket_path) {
-		default_socket_path(default_sock, sizeof(default_sock));
+		resolve_socket_path(default_sock, sizeof(default_sock));
 		socket_path = default_sock;
 	}
 

@@ -233,14 +233,14 @@ send_key "super+shift+3"
 send_key "super+3"
 [ "$(root_current_desktop)" = "2" ] || fail "workspace switch to 3 failed"
 wait_visible_id "${wid_a}" >/dev/null || fail "moved window not visible on workspace 3"
-send_key "super+1"
-
-xdotool windowunmap "${wid_a}" >/dev/null 2>&1 || fail "failed to unmap off-workspace window"
+xdotool windowunmap "${wid_a}" >/dev/null 2>&1 || fail "failed to unmap visible window"
 sleep 0.25
+wait_invisible_id "${wid_a}" || fail "visible window did not unmap"
+send_key "super+1"
 send_key "super+3"
-wait_invisible_id "${wid_a}" || fail "off-workspace unmap state was lost on workspace switch"
-xdotool windowmap "${wid_a}" >/dev/null 2>&1 || fail "failed to remap off-workspace window"
-wait_visible_id "${wid_a}" >/dev/null || fail "remapped off-workspace window did not become visible"
+wait_invisible_id "${wid_a}" || fail "explicit unmap state was lost on workspace switch"
+xdotool windowmap "${wid_a}" >/dev/null 2>&1 || fail "failed to remap explicitly unmapped window"
+wait_visible_id "${wid_a}" >/dev/null || fail "remapped explicitly unmapped window did not become visible"
 send_key "super+1"
 
 spawn_xterm "scratch" -title "scratch-one" -class st -geometry 80x24+180+80

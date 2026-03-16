@@ -73,6 +73,10 @@ static void status_append_segment(char *dest, size_t destsz, const char *sep, co
 
 static Bool read_cpu_percent(double *usage_out)
 {
+#if !defined(__linux__)
+	(void)usage_out;
+	return False;
+#else
 	static unsigned long long prev_total = 0;
 	static unsigned long long prev_idle = 0;
 
@@ -122,10 +126,17 @@ static Bool read_cpu_percent(double *usage_out)
 	if (*usage_out > 100.0)
 		*usage_out = 100.0;
 	return True;
+#endif
 }
 
 static Bool read_ram_info(unsigned long long *used_mb, unsigned long long *total_mb, double *used_percent)
 {
+#if !defined(__linux__)
+	(void)used_mb;
+	(void)total_mb;
+	(void)used_percent;
+	return False;
+#else
 	if (!used_mb || !total_mb || !used_percent)
 		return False;
 
@@ -162,10 +173,18 @@ static Bool read_ram_info(unsigned long long *used_mb, unsigned long long *total
 	if (*used_percent > 100.0)
 		*used_percent = 100.0;
 	return True;
+#endif
 }
 
 static Bool read_battery_info(const char *base_path, int *capacity_out, char *status_out, size_t status_out_len)
 {
+#if !defined(__linux__)
+	(void)base_path;
+	(void)capacity_out;
+	(void)status_out;
+	(void)status_out_len;
+	return False;
+#else
 	if (!base_path || !base_path[0] || !capacity_out)
 		return False;
 
@@ -207,10 +226,16 @@ static Bool read_battery_info(const char *base_path, int *capacity_out, char *st
 	}
 
 	return True;
+#endif
 }
 
 static Bool find_battery_path(char *out_path, size_t out_path_len)
 {
+#if !defined(__linux__)
+	(void)out_path;
+	(void)out_path_len;
+	return False;
+#else
 	if (!out_path || out_path_len == 0)
 		return False;
 
@@ -254,6 +279,7 @@ static Bool find_battery_path(char *out_path, size_t out_path_len)
 
 	closedir(dir);
 	return False;
+#endif
 }
 
 static Bool status_append_named_segment(char *dest, size_t destsz, const char *sep,

@@ -212,6 +212,168 @@ void hdl_button_release(XEvent *xev)
 	swap_target = NULL;
 }
 
+static Bool resolve_state_action(Bool current, long action, Bool *want_out)
+{
+	if (!want_out)
+		return False;
+
+	switch (action) {
+	case 0:
+		*want_out = False;
+		return True;
+	case 1:
+		*want_out = True;
+		return True;
+	case 2:
+		*want_out = !current;
+		return True;
+	default:
+		return False;
+	}
+}
+
+static Client *next_focus_candidate(Client *skip)
+{
+	Client *fallback = NULL;
+	for (Client *c = workspaces[current_ws]; c; c = c->next) {
+		if (!c->mapped || c == skip)
+			continue;
+		if (c->mon == current_mon)
+			return c;
+		if (!fallback)
+			fallback = c;
+	}
+	return fallback;
+}
+
+static void apply_hidden_state(Client *c, Bool want_hidden, Bool *needs_layout, Bool *needs_borders, Bool *needs_refocus)
+{
+	if (!c || want_hidden == c->hidden)
+		return;
+
+	c->hidden = want_hidden;
+	window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_HIDDEN], want_hidden);
+
+	if (want_hidden) {
+		if (!c->mapped)
+			return;
+
+		c->ignore_unmap_events++;
+		XUnmapWindow(dpy, c->win);
+		c->mapped = False;
+
+		if (c->ws == current_ws) {
+			if (needs_layout)
+				*needs_layout = True;
+			if (needs_borders)
+				*needs_borders = True;
+			if (needs_refocus && focused == c)
+				*needs_refocus = True;
+		}
+		return;
+	}
+
+	c->mapped = True;
+	if (c->ws != current_ws)
+		return;
+
+	XMapWindow(dpy, c->win);
+	if (needs_borders)
+		*needs_borders = True;
+	if (needs_layout && !c->floating && !c->fullscreen)
+		*needs_layout = True;
+}
+
+static void apply_maximized_state(Client *c, Bool want_horz, Bool want_vert, Bool *needs_layout, Bool *needs_borders)
+{
+	if (!c)
+		return;
+
+	Bool changed = (want_horz != c->maximized_horz || want_vert != c->maximized_vert);
+	if (!changed)
+		return;
+
+	c->maximized_horz = want_horz;
+	c->maximized_vert = want_vert;
+	window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_MAXIMIZED_HORZ], want_horz);
+	window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_MAXIMIZED_VERT], want_vert);
+
+	if (c->fullscreen)
+		return;
+
+	if (want_horz || want_vert) {
+		if (!c->max_restore_valid) {
+			XWindowAttributes wa;
+			if (XGetWindowAttributes(dpy, c->win, &wa)) {
+				c->max_restore_x = wa.x;
+				c->max_restore_y = wa.y;
+				c->max_restore_w = wa.width;
+				c->max_restore_h = wa.height;
+			}
+			else {
+				c->max_restore_x = c->x;
+				c->max_restore_y = c->y;
+				c->max_restore_w = c->w;
+				c->max_restore_h = c->h;
+			}
+			c->max_restore_floating = c->floating;
+			c->max_restore_valid = True;
+		}
+
+		if (!c->floating) {
+			c->floating = True;
+			c->max_forced_floating = True;
+			if (needs_layout && c->ws == current_ws)
+				*needs_layout = True;
+		}
+
+		int mon = CLAMP(c->mon, 0, n_mons - 1);
+		int wx, wy, ww, wh;
+		monitor_workarea(mon, &wx, &wy, &ww, &wh);
+
+		int nx = want_horz ? wx : c->x;
+		int ny = want_vert ? wy : c->y;
+		int nw = want_horz ? MAX(1, ww) : c->w;
+		int nh = want_vert ? MAX(1, wh) : c->h;
+		XMoveResizeWindow(dpy, c->win, nx, ny, (unsigned int)nw, (unsigned int)nh);
+		c->x = nx;
+		c->y = ny;
+		c->w = nw;
+		c->h = nh;
+		if (needs_borders && c->ws == current_ws)
+			*needs_borders = True;
+		return;
+	}
+
+	if (c->max_restore_valid) {
+		XMoveResizeWindow(
+			dpy,
+			c->win,
+			c->max_restore_x,
+			c->max_restore_y,
+			(unsigned int)MAX(1, c->max_restore_w),
+			(unsigned int)MAX(1, c->max_restore_h)
+		);
+		c->x = c->max_restore_x;
+		c->y = c->max_restore_y;
+		c->w = MAX(1, c->max_restore_w);
+		c->h = MAX(1, c->max_restore_h);
+	}
+
+	if (c->max_forced_floating && !global_floating && !c->modal_forced_floating) {
+		c->floating = c->max_restore_floating;
+		if (!c->floating)
+			c->mon = get_monitor_for(c);
+		if (needs_layout && c->ws == current_ws)
+			*needs_layout = True;
+	}
+
+	c->max_forced_floating = False;
+	c->max_restore_valid = False;
+	if (needs_borders && c->ws == current_ws)
+		*needs_borders = True;
+}
+
 void hdl_client_msg(XEvent *xev)
 {
 	XClientMessageEvent *client_msg_ev = &xev->xclient;
@@ -230,6 +392,12 @@ void hdl_client_msg(XEvent *xev)
 
 		if (c->ws != current_ws)
 			change_workspace(c->ws);
+		if (c->hidden) {
+			Bool relayout = False;
+			Bool borders = False;
+			Bool refocus = False;
+			apply_hidden_state(c, False, &relayout, &borders, &refocus);
+		}
 		if (!c->mapped) {
 			XMapWindow(dpy, c->win);
 			c->mapped = True;
@@ -240,16 +408,60 @@ void hdl_client_msg(XEvent *xev)
 		return;
 	}
 
-	if (client_msg_ev->message_type == atoms[ATOM_NET_WM_DESKTOP]) {
-		int ws = (int)client_msg_ev->data.l[0];
-		if (ws < 0 || ws >= NUM_WORKSPACES)
-			return;
-
+	if (client_msg_ev->message_type == atoms[ATOM_NET_CLOSE_WINDOW]) {
 		Window w = find_toplevel(client_msg_ev->window);
 		Client *c = find_client(w);
 		if (!c)
 			return;
 
+		Atom *protocols = NULL;
+		int n_protocols = 0;
+		if (XGetWMProtocols(dpy, c->win, &protocols, &n_protocols) && protocols) {
+			for (int i = 0; i < n_protocols; i++) {
+				if (protocols[i] != atoms[ATOM_WM_DELETE_WINDOW])
+					continue;
+
+				XEvent ev = {.xclient = {
+					.type = ClientMessage,
+					.window = c->win,
+					.message_type = atoms[ATOM_WM_PROTOCOLS],
+					.format = 32
+				}};
+				ev.xclient.data.l[0] = atoms[ATOM_WM_DELETE_WINDOW];
+				ev.xclient.data.l[1] = CurrentTime;
+				XSendEvent(dpy, c->win, False, NoEventMask, &ev);
+				XFree(protocols);
+				return;
+			}
+			XFree(protocols);
+		}
+
+		XKillClient(dpy, c->win);
+		return;
+	}
+
+	if (client_msg_ev->message_type == atoms[ATOM_NET_WM_DESKTOP]) {
+		Window w = find_toplevel(client_msg_ev->window);
+		Client *c = find_client(w);
+		if (!c)
+			return;
+
+		unsigned long desk = (unsigned long)client_msg_ev->data.l[0];
+		if ((desk & 0xFFFFFFFFUL) == 0xFFFFFFFFUL) {
+			c->sticky = True;
+			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_STICKY], True);
+			update_client_desktop_properties();
+			return;
+		}
+
+		int ws = (int)desk;
+		if (ws < 0 || ws >= NUM_WORKSPACES)
+			return;
+
+		if (c->sticky) {
+			c->sticky = False;
+			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_STICKY], False);
+		}
 		move_client_to_workspace(c, ws, False);
 		return;
 	}
@@ -264,6 +476,17 @@ void hdl_client_msg(XEvent *xev)
 		long action = client_msg_ev->data.l[0];
 		Atom a1 = (Atom)client_msg_ev->data.l[1];
 		Atom a2 = (Atom)client_msg_ev->data.l[2];
+		Bool needs_layout = False;
+		Bool needs_borders = False;
+		Bool needs_refocus = False;
+		Bool have_max_h = False;
+		Bool have_max_v = False;
+		Bool have_hidden = False;
+		Bool have_sticky = False;
+		Bool want_max_h = c->maximized_horz;
+		Bool want_max_v = c->maximized_vert;
+		Bool want_hidden = c->hidden;
+		Bool want_sticky = c->sticky;
 
 		Atom state_atoms[2] = { a1, a2 };
 		for (int i = 0; i < 2; i++) {
@@ -271,21 +494,128 @@ void hdl_client_msg(XEvent *xev)
 				continue;
 
 			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_FULLSCREEN]) {
-				Bool want = c->fullscreen;
-				if (action == 0)
-					want = False;
-				else if (action == 1)
-					want = True;
-				else if (action == 2)
-					want = !want;
+				Bool was_fullscreen = c->fullscreen;
+				Bool want = was_fullscreen;
+				if (!resolve_state_action(was_fullscreen, action, &want))
+					continue;
 
-				apply_fullscreen(c, want);
-
+				if (want != was_fullscreen)
+					apply_fullscreen(c, want);
 				if (want)
 					XRaiseWindow(dpy, c->win);
+				if (want != was_fullscreen)
+					needs_borders = True;
+				continue;
 			}
-			/* TODO: other states */
+
+			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_MODAL]) {
+					Bool want_modal = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_MODAL]);
+					if (!resolve_state_action(want_modal, action, &want_modal))
+						continue;
+
+					window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_MODAL], want_modal);
+
+				if (want_modal) {
+					if (!c->floating && !c->fullscreen) {
+						c->floating = True;
+						c->modal_forced_floating = True;
+						needs_layout = True;
+					}
+					XRaiseWindow(dpy, c->win);
+				}
+				else {
+					if (c->modal_forced_floating && !c->fullscreen && !global_floating) {
+						c->floating = False;
+						c->mon = get_monitor_for(c);
+						needs_layout = True;
+					}
+					c->modal_forced_floating = False;
+					}
+
+					needs_borders = True;
+					continue;
+				}
+
+			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_MAXIMIZED_HORZ]) {
+				if (!resolve_state_action(want_max_h, action, &want_max_h))
+					continue;
+				have_max_h = True;
+				continue;
+			}
+
+			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_MAXIMIZED_VERT]) {
+				if (!resolve_state_action(want_max_v, action, &want_max_v))
+					continue;
+				have_max_v = True;
+				continue;
+			}
+
+			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_HIDDEN]) {
+				if (!resolve_state_action(want_hidden, action, &want_hidden))
+					continue;
+				have_hidden = True;
+				continue;
+			}
+
+			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_STICKY]) {
+				if (!resolve_state_action(want_sticky, action, &want_sticky))
+					continue;
+				have_sticky = True;
+				continue;
+			}
+
+			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_ABOVE]) {
+				Bool want_above = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_ABOVE]);
+				if (!resolve_state_action(want_above, action, &want_above))
+					continue;
+				window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_ABOVE], want_above);
+				if (want_above)
+					XRaiseWindow(dpy, c->win);
+				needs_borders = True;
+				continue;
+			}
+
+			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_BELOW]) {
+				Bool want_below = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_BELOW]);
+				if (!resolve_state_action(want_below, action, &want_below))
+					continue;
+				window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_BELOW], want_below);
+				if (want_below)
+					XLowerWindow(dpy, c->win);
+				needs_borders = True;
+				continue;
+			}
+
+			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_SHADED] ||
+			    state_atoms[i] == atoms[ATOM_NET_WM_STATE_SKIP_TASKBAR] ||
+			    state_atoms[i] == atoms[ATOM_NET_WM_STATE_SKIP_PAGER] ||
+			    state_atoms[i] == atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION]) {
+				Bool current = window_has_ewmh_state(c->win, state_atoms[i]);
+				Bool want = current;
+				if (!resolve_state_action(current, action, &want))
+					continue;
+				window_set_ewmh_state(c->win, state_atoms[i], want);
+			}
 		}
+
+		if (have_max_h || have_max_v)
+			apply_maximized_state(c, want_max_h, want_max_v, &needs_layout, &needs_borders);
+		if (have_hidden)
+			apply_hidden_state(c, want_hidden, &needs_layout, &needs_borders, &needs_refocus);
+		if (have_sticky) {
+			c->sticky = want_sticky;
+			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_STICKY], want_sticky);
+			update_client_desktop_properties();
+		}
+
+		if (needs_layout && c->ws == current_ws)
+			tile();
+		if (needs_refocus && c->ws == current_ws) {
+			Client *next = next_focus_candidate(c);
+			set_input_focus(next, True, False);
+		}
+		else if (needs_borders && c->ws == current_ws)
+			update_borders();
 		return;
 	}
 }
@@ -475,6 +805,11 @@ void hdl_map_req(XEvent *xev)
 	/* check if this window is already managed on any workspace */
 	Client *c = find_client(w);
 	if (c) {
+		if (c->hidden) {
+			c->hidden = False;
+			c->mapped = True;
+			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_HIDDEN], False);
+		}
 		if (c->ws == current_ws) {
 			if (!c->mapped) {
 				XMapWindow(dpy, w);
@@ -530,26 +865,38 @@ void hdl_map_req(XEvent *xev)
 	if (!should_float)
 		should_float = window_should_float(w);
 
-	if (!should_float) {
-		Atom state_type;
-		Atom *state_atoms = NULL;
-		int state_format;
-		unsigned long bytes_after;
-		n_items = 0;
+	Bool state_modal = False;
+	Bool state_sticky = False;
+	Bool state_hidden = False;
+	Bool state_max_horz = False;
+	Bool state_max_vert = False;
 
-		if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_STATE], 0, 8, False, XA_ATOM, &state_type, &state_format, &n_items,
-					           &bytes_after, (unsigned char**)&state_atoms) == Success && state_atoms) {
-			if (state_type == XA_ATOM && state_format == 32) {
-				for (unsigned long i = 0; i < n_items; i++) {
-					if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_MODAL]) {
-						should_float = True;
-						break;
-					}
-				}
+	Atom state_type = None;
+	Atom *state_atoms = NULL;
+	int state_format = 0;
+	unsigned long bytes_after = 0;
+	n_items = 0;
+	if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_STATE], 0, 32, False, XA_ATOM, &state_type, &state_format,
+			       &n_items, &bytes_after, (unsigned char**)&state_atoms) == Success && state_atoms) {
+		if (state_type == XA_ATOM && state_format == 32) {
+			for (unsigned long i = 0; i < n_items; i++) {
+				if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_MODAL])
+					state_modal = True;
+				else if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_STICKY])
+					state_sticky = True;
+				else if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_HIDDEN])
+					state_hidden = True;
+				else if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_MAXIMIZED_HORZ])
+					state_max_horz = True;
+				else if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_MAXIMIZED_VERT])
+					state_max_vert = True;
 			}
-			XFree(state_atoms);
 		}
+		XFree(state_atoms);
 	}
+
+	if (!should_float && state_modal)
+		should_float = True;
 
 	if (open_windows >= MAX_CLIENTS) {
 		fprintf(stderr, "cupidwm: max clients reached, ignoring map request\n");
@@ -561,6 +908,9 @@ void hdl_map_req(XEvent *xev)
 	if (!c)
 		return;
 	set_wm_state(w, NormalState);
+	c->sticky = state_sticky;
+	if (c->sticky)
+		window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_STICKY], True);
 
 	Window transient;
 	if (!should_float && XGetTransientForHint(dpy, w, &transient))
@@ -581,6 +931,8 @@ void hdl_map_req(XEvent *xev)
 
 	if (should_float || global_floating)
 		c->floating = True;
+	if (state_modal)
+		c->modal_forced_floating = True;
 
 	if (window_should_start_fullscreen(w)) {
 		c->fullscreen = True;
@@ -600,6 +952,15 @@ void hdl_map_req(XEvent *xev)
 		c->h = h_;
 		XMoveResizeWindow(dpy, w, x, y, w_, h_);
 		XSetWindowBorderWidth(dpy, w, user_config.border_width);
+	}
+
+	if (state_max_horz || state_max_vert)
+		apply_maximized_state(c, state_max_horz, state_max_vert, NULL, NULL);
+
+	if (state_hidden) {
+		c->hidden = True;
+		c->mapped = False;
+		window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_HIDDEN], True);
 	}
 
 	update_net_client_list();
@@ -653,13 +1014,15 @@ void hdl_map_req(XEvent *xev)
 		c->floating = False;
 	}
 
-	XMapWindow(dpy, w);
-	c->mapped = True;
-	if (c->fullscreen)
-		apply_fullscreen(c, True);
+	if (!c->hidden) {
+		XMapWindow(dpy, w);
+		c->mapped = True;
+		if (c->fullscreen)
+			apply_fullscreen(c, True);
+	}
 	set_frame_extents(w);
 
-	if (user_config.new_win_focus) {
+	if (user_config.new_win_focus && !c->hidden) {
 		focused = c;
 		set_input_focus(focused, True, True);
 		return;
@@ -850,6 +1213,52 @@ void hdl_property_ntf(XEvent *xev)
 		Bool want = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_FULLSCREEN]);
 		if (want != c->fullscreen)
 			apply_fullscreen(c, want);
+
+		Bool want_modal = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_MODAL]);
+		Bool relayout = False;
+		Bool needs_borders = False;
+		Bool needs_refocus = False;
+		if (want_modal) {
+			if (!c->floating && !c->fullscreen) {
+				c->floating = True;
+				c->modal_forced_floating = True;
+				relayout = True;
+			}
+		}
+		else {
+			if (c->modal_forced_floating && !c->fullscreen && !global_floating) {
+				c->floating = False;
+				c->mon = get_monitor_for(c);
+				relayout = True;
+			}
+			c->modal_forced_floating = False;
+		}
+
+		Bool want_max_h = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_MAXIMIZED_HORZ]);
+		Bool want_max_v = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_MAXIMIZED_VERT]);
+		apply_maximized_state(c, want_max_h, want_max_v, &relayout, &needs_borders);
+
+		Bool want_hidden = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_HIDDEN]);
+		apply_hidden_state(c, want_hidden, &relayout, &needs_borders, &needs_refocus);
+
+		c->sticky = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_STICKY]);
+		update_client_desktop_properties();
+
+		Bool want_above = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_ABOVE]);
+		Bool want_below = window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_BELOW]);
+		if (want_above)
+			XRaiseWindow(dpy, c->win);
+		else if (want_below)
+			XLowerWindow(dpy, c->win);
+
+		if (relayout && c->ws == current_ws)
+			tile();
+		if (needs_refocus && c->ws == current_ws) {
+			Client *next = next_focus_candidate(c);
+			set_input_focus(next, True, False);
+		}
+		else if ((needs_borders || relayout) && c->ws == current_ws)
+			update_borders();
 	}
 }
 
@@ -864,8 +1273,7 @@ void hdl_unmap_ntf(XEvent *xev)
 
 			if (c->ignore_unmap_events > 0) {
 				c->ignore_unmap_events--;
-				found = True;
-				break;
+				return;
 			}
 
 			c->mapped = False;

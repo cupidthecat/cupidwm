@@ -36,6 +36,7 @@
 #include <X11/Xft/Xft.h>
 
 #include <X11/extensions/Xinerama.h>
+#include <X11/extensions/Xrandr.h>
 #include <X11/Xcursor/Xcursor.h>
 
 #include "defs.h"
@@ -107,6 +108,7 @@ void scan_existing_windows(void);
 void select_input(Window w, Mask masks);
 void send_wm_take_focus(Window w);
 void setup(void);
+void setup_randr(void);
 void setup_atoms(void);
 void set_frame_extents(Window w);
 void set_input_focus(Client *c, Bool raise_win, Bool warp);
@@ -133,6 +135,7 @@ void update_mons(void);
 void update_net_client_list(void);
 void update_struts(void);
 void update_workarea(void);
+void update_focused_ewmh_state(Client *active);
 void warp_cursor(Client *c);
 Bool window_has_ewmh_state(Window w, Atom state);
 Bool window_is_dock(Window w);
@@ -143,8 +146,10 @@ void ipc_cleanup(void);
 int ipc_get_server_fd(void);
 void ipc_handle_connection(void);
 int ipc_setup(void);
+const char *ipc_resolve_socket_path(const char *configured_path, char *out, size_t outsz);
 int xerr(Display *d, XErrorEvent *ee);
 void xev_case(XEvent *xev);
+void handle_xevent(XEvent *xev);
 
 /* config action wrappers */
 void centrewindowcmd(const Arg *arg);
@@ -200,6 +205,7 @@ Client *bar_client_at(Monitor *m, int click_x, int title_x, int title_w);
 int collect_bar_clients(int mon, Client **list, int max_clients);
 void monitor_workarea(int mon, int *x, int *y, int *w, int *h);
 Bool get_window_title(Window w, char *buf, size_t buflen);
+Bool monitor_topology_changed(void);
 
 #include "config.h"
 
@@ -210,6 +216,15 @@ static const char *atom_names[ATOM_COUNT] = {
 	[ATOM_NET_SUPPORTED]                 = "_NET_SUPPORTED",
 	[ATOM_NET_WM_STATE]                  = "_NET_WM_STATE",
 	[ATOM_NET_WM_STATE_FULLSCREEN]       = "_NET_WM_STATE_FULLSCREEN",
+	[ATOM_NET_WM_STATE_STICKY]           = "_NET_WM_STATE_STICKY",
+	[ATOM_NET_WM_STATE_MAXIMIZED_VERT]   = "_NET_WM_STATE_MAXIMIZED_VERT",
+	[ATOM_NET_WM_STATE_MAXIMIZED_HORZ]   = "_NET_WM_STATE_MAXIMIZED_HORZ",
+	[ATOM_NET_WM_STATE_SHADED]           = "_NET_WM_STATE_SHADED",
+	[ATOM_NET_WM_STATE_SKIP_TASKBAR]     = "_NET_WM_STATE_SKIP_TASKBAR",
+	[ATOM_NET_WM_STATE_SKIP_PAGER]       = "_NET_WM_STATE_SKIP_PAGER",
+	[ATOM_NET_WM_STATE_HIDDEN]           = "_NET_WM_STATE_HIDDEN",
+	[ATOM_NET_WM_STATE_DEMANDS_ATTENTION] = "_NET_WM_STATE_DEMANDS_ATTENTION",
+	[ATOM_NET_WM_STATE_FOCUSED]          = "_NET_WM_STATE_FOCUSED",
 	[ATOM_WM_STATE]                      = "WM_STATE",
 	[ATOM_NET_WM_WINDOW_TYPE]            = "_NET_WM_WINDOW_TYPE",
 	[ATOM_NET_WORKAREA]                  = "_NET_WORKAREA",
@@ -218,6 +233,7 @@ static const char *atom_names[ATOM_COUNT] = {
 	[ATOM_NET_WM_STRUT_PARTIAL]          = "_NET_WM_STRUT_PARTIAL",
 	[ATOM_NET_SUPPORTING_WM_CHECK]       = "_NET_SUPPORTING_WM_CHECK",
 	[ATOM_NET_WM_NAME]                   = "_NET_WM_NAME",
+	[ATOM_NET_CLOSE_WINDOW]              = "_NET_CLOSE_WINDOW",
 	[ATOM_UTF8_STRING]                   = "UTF8_STRING",
 	[ATOM_NET_WM_DESKTOP]                = "_NET_WM_DESKTOP",
 	[ATOM_NET_CLIENT_LIST]               = "_NET_CLIENT_LIST",
@@ -237,6 +253,8 @@ static const char *atom_names[ATOM_COUNT] = {
 	[ATOM_NET_WM_WINDOW_TYPE_TOOLTIP]    = "_NET_WM_WINDOW_TYPE_TOOLTIP",
 	[ATOM_NET_WM_WINDOW_TYPE_NOTIFICATION] = "_NET_WM_WINDOW_TYPE_NOTIFICATION",
 	[ATOM_NET_WM_STATE_MODAL]            = "_NET_WM_STATE_MODAL",
+	[ATOM_NET_WM_STATE_ABOVE]            = "_NET_WM_STATE_ABOVE",
+	[ATOM_NET_WM_STATE_BELOW]            = "_NET_WM_STATE_BELOW",
 	[ATOM_WM_PROTOCOLS]                  = "WM_PROTOCOLS",
 };
 
@@ -268,9 +286,14 @@ Bool global_floating = False;
 Bool in_ws_switch = False;
 Bool running = False;
 Bool monocle = False;
+Bool randr_enabled = False;
 
 Mask numlock_mask = 0;
 Mask mode_switch_mask = 0;
+int randr_event_base = 0;
+int randr_error_base = 0;
+int randr_major_version = 0;
+int randr_minor_version = 0;
 
 int scr_width;
 int scr_height;
@@ -364,6 +387,225 @@ Bool get_window_title(Window w, char *buf, size_t buflen)
 	return buf[0] != '\0';
 }
 
+static unsigned long long mix_u64(unsigned long long h, unsigned long long v)
+{
+	h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+	return h;
+}
+
+static void reset_monitor_slot(Monitor *m, int x, int y, int w, int h)
+{
+	if (!m)
+		return;
+
+	m->x = x;
+	m->y = y;
+	m->w = MAX(1, w);
+	m->h = MAX(1, h);
+	m->reserve_left = 0;
+	m->reserve_right = 0;
+	m->reserve_top = 0;
+	m->reserve_bottom = 0;
+	m->bar_y = 0;
+	m->barwin = 0;
+}
+
+static int cmp_monitor_geom(const void *pa, const void *pb)
+{
+	const Monitor *a = pa;
+	const Monitor *b = pb;
+	if (a->x != b->x)
+		return a->x - b->x;
+	if (a->y != b->y)
+		return a->y - b->y;
+	if (a->w != b->w)
+		return a->w - b->w;
+	return a->h - b->h;
+}
+
+static int sort_and_dedupe_monitors(Monitor *mons, int n)
+{
+	if (!mons || n <= 0)
+		return 0;
+
+	qsort(mons, (size_t)n, sizeof(*mons), cmp_monitor_geom);
+	int unique = 1;
+	for (int i = 1; i < n; i++) {
+		if (cmp_monitor_geom(&mons[i], &mons[unique - 1]) == 0)
+			continue;
+		mons[unique++] = mons[i];
+	}
+
+	return unique;
+}
+
+static int query_randr_monitors(Monitor *out, int cap)
+{
+	if (!out || cap <= 0 || !randr_enabled)
+		return 0;
+
+#if RANDR_MAJOR > 1 || (RANDR_MAJOR == 1 && RANDR_MINOR >= 5)
+	if (randr_major_version > 1 || (randr_major_version == 1 && randr_minor_version >= 5)) {
+		int query_n = 0;
+		XRRMonitorInfo *info = XRRGetMonitors(dpy, root, True, &query_n);
+		if (!info || query_n <= 0) {
+			if (info)
+				XRRFreeMonitors(info);
+			return 0;
+		}
+
+		int n = MIN(query_n, cap);
+		if (query_n > cap)
+			fprintf(stderr, "cupidwm: RandR monitor count %d exceeds MAX_MONITORS=%d, truncating\n", query_n, cap);
+
+		for (int i = 0; i < n; i++)
+			reset_monitor_slot(&out[i], info[i].x, info[i].y, info[i].width, info[i].height);
+
+		XRRFreeMonitors(info);
+		return sort_and_dedupe_monitors(out, n);
+	}
+#endif
+
+	return 0;
+}
+
+static int query_randr_crtcs(Monitor *out, int cap)
+{
+	if (!out || cap <= 0 || !randr_enabled)
+		return 0;
+	if (randr_major_version < 1 || (randr_major_version == 1 && randr_minor_version < 2))
+		return 0;
+
+	XRRScreenResources *res = NULL;
+#if RANDR_MAJOR > 1 || (RANDR_MAJOR == 1 && RANDR_MINOR >= 3)
+	res = XRRGetScreenResourcesCurrent(dpy, root);
+#endif
+	if (!res)
+		res = XRRGetScreenResources(dpy, root);
+	if (!res)
+		return 0;
+
+	int n = 0;
+	Bool warned = False;
+	for (int i = 0; i < res->ncrtc; i++) {
+		XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, res, res->crtcs[i]);
+		if (!ci)
+			continue;
+
+		Bool active = (ci->mode != None && ci->noutput > 0 && ci->width > 0 && ci->height > 0);
+		if (active) {
+			if (n < cap)
+				reset_monitor_slot(&out[n++], ci->x, ci->y, ci->width, ci->height);
+			else if (!warned) {
+				fprintf(stderr, "cupidwm: RandR CRTC count exceeds MAX_MONITORS=%d, truncating\n", cap);
+				warned = True;
+			}
+		}
+
+		XRRFreeCrtcInfo(ci);
+	}
+
+	XRRFreeScreenResources(res);
+	return sort_and_dedupe_monitors(out, n);
+}
+
+static int query_xinerama_monitors(Monitor *out, int cap)
+{
+	if (!out || cap <= 0 || !XineramaIsActive(dpy))
+		return 0;
+
+	int query_n = 0;
+	XineramaScreenInfo *info = XineramaQueryScreens(dpy, &query_n);
+	if (!info || query_n <= 0) {
+		if (info)
+			XFree(info);
+		return 0;
+	}
+
+	int n = MIN(query_n, cap);
+	if (query_n > cap)
+		fprintf(stderr, "cupidwm: monitor count %d exceeds MAX_MONITORS=%d, truncating\n", query_n, cap);
+
+	for (int i = 0; i < n; i++)
+		reset_monitor_slot(&out[i], info[i].x_org, info[i].y_org, info[i].width, info[i].height);
+
+	XFree(info);
+	return sort_and_dedupe_monitors(out, n);
+}
+
+static int query_active_monitors(Monitor *out, int cap, Bool *used_randr)
+{
+	if (used_randr)
+		*used_randr = False;
+	if (!out || cap <= 0)
+		return 0;
+
+	int n = query_randr_monitors(out, cap);
+	if (n > 0) {
+		if (used_randr)
+			*used_randr = True;
+		return n;
+	}
+
+	n = query_randr_crtcs(out, cap);
+	if (n > 0) {
+		if (used_randr)
+			*used_randr = True;
+		return n;
+	}
+
+	n = query_xinerama_monitors(out, cap);
+	if (n > 0)
+		return n;
+
+	reset_monitor_slot(out, 0, 0, XDisplayWidth(dpy, DefaultScreen(dpy)), XDisplayHeight(dpy, DefaultScreen(dpy)));
+	return 1;
+}
+
+static void snapshot_monitor_topology(unsigned long long *sig_out, int *count_out)
+{
+	unsigned long long sig = 1469598103934665603ULL;
+	Monitor discovered[MAX_MONITORS];
+	Bool used_randr = False;
+	int count = query_active_monitors(discovered, MAX_MONITORS, &used_randr);
+
+	sig = mix_u64(sig, (unsigned long long)(unsigned int)XDisplayWidth(dpy, DefaultScreen(dpy)));
+	sig = mix_u64(sig, (unsigned long long)(unsigned int)XDisplayHeight(dpy, DefaultScreen(dpy)));
+	sig = mix_u64(sig, used_randr ? 1ULL : 0ULL);
+	for (int i = 0; i < count; i++) {
+		sig = mix_u64(sig, (unsigned long long)(unsigned int)discovered[i].x);
+		sig = mix_u64(sig, (unsigned long long)(unsigned int)discovered[i].y);
+		sig = mix_u64(sig, (unsigned long long)(unsigned int)discovered[i].w);
+		sig = mix_u64(sig, (unsigned long long)(unsigned int)discovered[i].h);
+	}
+
+	if (sig_out)
+		*sig_out = sig;
+	if (count_out)
+		*count_out = count;
+}
+
+Bool monitor_topology_changed(void)
+{
+	static int prev_count = -1;
+	static unsigned long long prev_sig = 0;
+
+	unsigned long long sig = 0;
+	int count = 0;
+	snapshot_monitor_topology(&sig, &count);
+
+	if (prev_count < 0) {
+		prev_count = count;
+		prev_sig = sig;
+		return False;
+	}
+
+	Bool changed = (count != prev_count || sig != prev_sig);
+	prev_count = count;
+	prev_sig = sig;
+	return changed;
+}
+
 Client *add_client(Window w, int ws)
 {
 	Client *c = malloc(sizeof(Client));
@@ -442,7 +684,19 @@ Client *add_client(Window w, int ws)
 	c->floating = False;
 	c->prev_floating = False;
 	c->floating_saved = False;
+	c->modal_forced_floating = False;
 	c->fullscreen = False;
+	c->hidden = False;
+	c->sticky = False;
+	c->maximized_horz = False;
+	c->maximized_vert = False;
+	c->max_forced_floating = False;
+	c->max_restore_valid = False;
+	c->max_restore_floating = False;
+	c->max_restore_x = 0;
+	c->max_restore_y = 0;
+	c->max_restore_w = 0;
+	c->max_restore_h = 0;
 	c->mapped = True;
 	c->ignore_unmap_events = 0;
 	c->custom_stack_height = 0;
@@ -460,9 +714,9 @@ Client *add_client(Window w, int ws)
 	}
 
 	/* associate client with workspace n */
-	long desktop = ws;
+	unsigned long desktop = c->sticky ? 0xFFFFFFFFUL : (unsigned long)ws;
 	XChangeProperty(dpy, w, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
-			        PropModeReplace, (unsigned char *)&desktop, 1);
+				        PropModeReplace, (unsigned char *)&desktop, 1);
 	XRaiseWindow(dpy, w);
 	return c;
 }
@@ -579,7 +833,7 @@ void change_workspace(int ws)
 	for (Client *c = workspaces[previous_workspace]; c; c = c->next) {
 		if (!c->mapped || is_scratchpad_client(c))
 			continue;
-		c->ignore_unmap_events++;
+		c->ignore_unmap_events += 2;
 		XUnmapWindow(dpy, c->win);
 	}
 
@@ -614,9 +868,9 @@ void change_workspace(int ws)
 			XRaiseWindow(dpy, c->win);
 
 			/* Update desktop property */
-			long desktop = current_ws;
-			XChangeProperty(dpy, c->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
-					        PropModeReplace, (unsigned char *)&desktop, 1);
+				unsigned long desktop = c->sticky ? 0xFFFFFFFFUL : (unsigned long)current_ws;
+				XChangeProperty(dpy, c->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
+						        PropModeReplace, (unsigned char *)&desktop, 1);
 		}
 	}
 
@@ -1016,7 +1270,9 @@ static Bool process_has_pty_fd(pid_t pid)
 
 		char fdpath[PATH_MAX] = {0};
 		char link[PATH_MAX] = {0};
-		snprintf(fdpath, sizeof(fdpath), "%s/%s", path, ent->d_name);
+		int npath = snprintf(fdpath, sizeof(fdpath), "%s/%s", path, ent->d_name);
+		if (npath < 0 || (size_t)npath >= sizeof(fdpath))
+			continue;
 		ssize_t n = readlink(fdpath, link, sizeof(link) - 1);
 		if (n <= 0)
 			continue;
@@ -1229,7 +1485,7 @@ void move_client_to_workspace(Client *moved, int ws, Bool focus_target)
 	workspaces[ws] = moved;
 	moved->ws = ws;
 
-	long desktop = ws;
+	unsigned long desktop = moved->sticky ? 0xFFFFFFFFUL : (unsigned long)ws;
 	XChangeProperty(dpy, moved->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
 		        PropModeReplace, (unsigned char *)&desktop, 1);
 
@@ -1828,6 +2084,7 @@ void run(void)
 	running = True;
 	XEvent xev;
 	time_t last_status_tick = 0;
+	time_t last_monitor_probe = 0;
 	int xfd = ConnectionNumber(dpy);
 	ipc_setup();
 
@@ -1853,7 +2110,7 @@ void run(void)
 		if (XPending(dpy)) {
 			while (XPending(dpy)) {
 				XNextEvent(dpy, &xev);
-				xev_case(&xev);
+				handle_xevent(&xev);
 			}
 		} else {
 			fd_set fds;
@@ -1887,7 +2144,7 @@ void run(void)
 				if (FD_ISSET(xfd, &fds)) {
 					while (XPending(dpy)) {
 						XNextEvent(dpy, &xev);
-						xev_case(&xev);
+						handle_xevent(&xev);
 					}
 				}
 			}
@@ -1913,6 +2170,17 @@ void run(void)
 		}
 
 		now = time(NULL);
+		if (!randr_enabled && (last_monitor_probe == 0 || now - last_monitor_probe >= 2)) {
+			last_monitor_probe = now;
+			if (monitor_topology_changed()) {
+				update_mons();
+				setup_bars();
+				update_struts();
+				tile();
+				update_borders();
+			}
+		}
+
 		if (user_config.status_interval_sec > 0 &&
 		    (last_status_tick == 0 || now - last_status_tick >= user_config.status_interval_sec)) {
 			last_status_tick = now;
@@ -1946,6 +2214,31 @@ void scan_existing_windows(void)
 		if (children)
 			XFree(children);
 	}
+}
+
+void setup_randr(void)
+{
+	randr_enabled = False;
+	randr_event_base = 0;
+	randr_error_base = 0;
+	randr_major_version = 0;
+	randr_minor_version = 0;
+
+	int major = 1;
+	int minor = 2;
+	if (!XRRQueryExtension(dpy, &randr_event_base, &randr_error_base))
+		return;
+	if (!XRRQueryVersion(dpy, &major, &minor))
+		return;
+	randr_major_version = major;
+	randr_minor_version = minor;
+
+	XRRSelectInput(dpy, root,
+		               RRScreenChangeNotifyMask |
+		               RRCrtcChangeNotifyMask |
+	               RROutputChangeNotifyMask |
+	               RROutputPropertyNotifyMask);
+	randr_enabled = True;
 }
 
 void select_input(Window w, Mask masks)
@@ -1988,6 +2281,7 @@ void setup(void)
 	root = XDefaultRootWindow(dpy);
 
 	setup_atoms();
+	setup_randr();
 	other_wm();
 	init_defaults();
 	update_modifier_masks();
@@ -2003,6 +2297,7 @@ void setup(void)
 	scr_height = XDisplayHeight(dpy, DefaultScreen(dpy));
 
 	update_mons();
+	monitor_topology_changed(); /* seed topology baseline */
 	setup_bars();
 	updatestatus();
 
@@ -2064,11 +2359,12 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 			if (layouts[current_layout].mode == LayoutMonocle || monocle || c->floating || !user_config.floating_on_top)
 				XRaiseWindow(dpy, w);
 		}
-		/* EWMH focus hint */
-		XChangeProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW], XA_WINDOW, 32,
-				PropModeReplace, (unsigned char *)&w, 1);
+			/* EWMH focus hint */
+			XChangeProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW], XA_WINDOW, 32,
+					PropModeReplace, (unsigned char *)&w, 1);
+			update_focused_ewmh_state(c);
 
-		update_borders();
+			update_borders();
 
 		if (warp && user_config.warp_cursor)
 			warp_cursor(c);
@@ -2076,12 +2372,13 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 	else {
 		/* no client */
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
-		XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
+			XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
 
-		focused = NULL;
-		ws_focused[current_ws] = NULL;
-		update_borders();
-	}
+			focused = NULL;
+			ws_focused[current_ws] = NULL;
+			update_focused_ewmh_state(NULL);
+			update_borders();
+		}
 
 	XFlush(dpy);
 }
@@ -2401,9 +2698,9 @@ void toggle_scratchpad(int n)
 		workspaces[current_ws] = c;
 		c->ws = current_ws;
 
-		long desktop = current_ws;
-		XChangeProperty(dpy, c->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&desktop, 1);
-	}
+			unsigned long desktop = c->sticky ? 0xFFFFFFFFUL : (unsigned long)current_ws;
+			XChangeProperty(dpy, c->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&desktop, 1);
+		}
 
 	c->mon = CLAMP(focused ? focused->mon : current_mon, 0, n_mons - 1);
 
@@ -2492,9 +2789,9 @@ void update_modifier_masks(void)
 
 void update_mons(void)
 {
-	XineramaScreenInfo *info;
 	Monitor *old = mons;
 	int old_n = n_mons;
+	Monitor discovered[MAX_MONITORS];
 
 	scr_width = XDisplayWidth(dpy, DefaultScreen(dpy));
 	scr_height = XDisplayHeight(dpy, DefaultScreen(dpy));
@@ -2504,72 +2801,17 @@ void update_mons(void)
 		XDefineCursor(dpy, scr_root, cursor_normal);
 	}
 
-	if (XineramaIsActive(dpy)) {
-		int query_n = 0;
-		info = XineramaQueryScreens(dpy, &query_n);
-		if (!info || query_n <= 0) {
-			n_mons = 1;
-			mons = malloc(sizeof *mons);
-			if (!mons) {
-				fputs("cupidwm: failed to allocate fallback monitor\n", stderr);
-				exit(EXIT_FAILURE);
-			}
-			mons[0].x = 0;
-			mons[0].y = 0;
-			mons[0].w = scr_width;
-			mons[0].h = scr_height;
-			mons[0].reserve_left = 0;
-			mons[0].reserve_right = 0;
-			mons[0].reserve_top = 0;
-			mons[0].reserve_bottom = 0;
-			mons[0].bar_y = 0;
-			mons[0].barwin = 0;
-			if (info)
-				XFree(info);
-		}
-		else {
-			n_mons = MIN(query_n, MAX_MONITORS);
-			if (query_n > MAX_MONITORS)
-				fprintf(stderr, "cupidwm: monitor count %d exceeds MAX_MONITORS=%d, truncating\n", query_n, MAX_MONITORS);
-
-			mons = malloc(sizeof *mons * n_mons);
-			if (!mons) {
-				fputs("cupidwm: failed to allocate monitors\n", stderr);
-				exit(EXIT_FAILURE);
-			}
-			for (int i = 0; i < n_mons; i++) {
-				mons[i].x = info[i].x_org;
-				mons[i].y = info[i].y_org;
-				mons[i].w = info[i].width;
-				mons[i].h = info[i].height;
-				mons[i].reserve_left = 0;
-				mons[i].reserve_right = 0;
-				mons[i].reserve_top = 0;
-				mons[i].reserve_bottom = 0;
-				mons[i].bar_y = 0;
-				mons[i].barwin = 0;
-			}
-			XFree(info);
-		}
-	}
-	else {
+	n_mons = query_active_monitors(discovered, MAX_MONITORS, NULL);
+	if (n_mons <= 0)
 		n_mons = 1;
-		mons = malloc(sizeof *mons);
-		if (!mons) {
-			fputs("cupidwm: failed to allocate monitor\n", stderr);
-			exit(EXIT_FAILURE);
-		}
-		mons[0].x = 0;
-		mons[0].y = 0;
-		mons[0].w = scr_width;
-		mons[0].h = scr_height;
-		mons[0].reserve_left = 0;
-		mons[0].reserve_right = 0;
-		mons[0].reserve_top = 0;
-		mons[0].reserve_bottom = 0;
-		mons[0].bar_y = 0;
-		mons[0].barwin = 0;
+
+	mons = malloc(sizeof(*mons) * (size_t)n_mons);
+	if (!mons) {
+		fputs("cupidwm: failed to allocate monitors\n", stderr);
+		exit(EXIT_FAILURE);
 	}
+	for (int i = 0; i < n_mons; i++)
+		mons[i] = discovered[i];
 
 	current_mon = CLAMP(current_mon, 0, n_mons - 1);
 	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
@@ -2796,22 +3038,74 @@ void xev_case(XEvent *xev)
 		fprintf(stderr, "cupidwm: invalid event type: %d\n", xev->type);
 }
 
+void handle_xevent(XEvent *xev)
+{
+	if (!xev)
+		return;
+
+	if (randr_enabled) {
+		int rr_screen_change = randr_event_base + RRScreenChangeNotify;
+		int rr_notify = randr_event_base + RRNotify;
+		if (xev->type == rr_screen_change || xev->type == rr_notify) {
+			Bool force_refresh = (xev->type == rr_screen_change);
+			XRRUpdateConfiguration(xev);
+			if (force_refresh || monitor_topology_changed()) {
+				update_mons();
+				setup_bars();
+				update_struts();
+				tile();
+				update_borders();
+			}
+			return;
+		}
+	}
+
+	xev_case(xev);
+}
+
+static void print_usage(FILE *out, const char *argv0)
+{
+	const char *name = (argv0 && argv0[0]) ? argv0 : "cupidwm";
+	fprintf(out, "usage: %s [options]\n", name);
+	fprintf(out, "  -h, --help               Show this help text\n");
+	fprintf(out, "  -v, --version            Print version information and exit\n");
+	fprintf(out, "  --print-ipc-socket       Print the resolved IPC socket path and exit\n");
+}
+
 int main(int ac, char **av)
 {
 	saved_argc = ac;
 	saved_argv = av;
 
 	if (ac > 1) {
-		if (strcmp(av[1], "-v") == 0 || strcmp(av[1], "--version") == 0) {
-			printf("%s\n%s\n%s\n", CUPIDWM_VERSION, CUPIDWM_AUTHOR, CUPIDWM_LICINFO);
-			return EXIT_SUCCESS;
-		}
-		else {
-			printf("usage:\n");
-			printf("\t[-v || --version]: See the version of cupidwm\n");
-			return EXIT_SUCCESS;
+		for (int i = 1; i < ac; i++) {
+			if (strcmp(av[i], "-v") == 0 || strcmp(av[i], "--version") == 0) {
+				printf("%s\n%s\n%s\n", CUPIDWM_VERSION, CUPIDWM_AUTHOR, CUPIDWM_LICINFO);
+				return EXIT_SUCCESS;
+			}
+
+			if (strcmp(av[i], "-h") == 0 || strcmp(av[i], "--help") == 0) {
+				print_usage(stdout, av[0]);
+				return EXIT_SUCCESS;
+			}
+
+			if (strcmp(av[i], "--print-ipc-socket") == 0) {
+				char socket_path[PATH_MAX] = {0};
+				if (!ipc_resolve_socket_path(ipc_socket_path, socket_path, sizeof(socket_path)) ||
+				    socket_path[0] == '\0') {
+					fprintf(stderr, "cupidwm: failed to resolve IPC socket path\n");
+					return EXIT_FAILURE;
+				}
+				puts(socket_path);
+				return EXIT_SUCCESS;
+			}
+
+			fprintf(stderr, "cupidwm: unknown option: %s\n", av[i]);
+			print_usage(stderr, av[0]);
+			return EXIT_FAILURE;
 		}
 	}
+
 	setup();
 	puts("cupidwm: starting...");
 	run();

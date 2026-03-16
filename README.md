@@ -11,7 +11,8 @@ built-in status rendering.
 - 9 workspaces with move-to-workspace support
 - Layouts: tile, monocle, floating, fibonacci, dwindle
 - Scratchpads, swallowing, and monitor focus/move actions
-- EWMH support for desktop state, active window, client list, stacking list, and workarea
+- RandR-driven monitor topology updates with fallback probing
+- EWMH support for desktop state, active window, client list, stacking list, workarea, and expanded `_NET_WM_STATE` handling
 - Built-in status modules (disk/CPU/RAM/battery/time)
 - Optional external status provider command (disabled by default)
 - Optional local IPC socket + `cupidwmctl` control tool (disabled by default)
@@ -42,6 +43,7 @@ Reference docs:
 - [docs/configuration.md](docs/configuration.md)
 - [docs/compatibility.md](docs/compatibility.md)
 - [docs/ipc.md](docs/ipc.md)
+- [docs/troubleshooting.md](docs/troubleshooting.md)
 - [SECURITY.md](SECURITY.md)
 - [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md)
 - [CHANGELOG.md](CHANGELOG.md)
@@ -52,8 +54,17 @@ Reference docs:
 - EWMH invariants suite (Xephyr): `make test-ewmh`
 - Full local gate: `make check`
   - Builds sanitizer debug binary
-  - Runs `cppcheck` when available
+  - Runs `cppcheck` and `shellcheck` when available
   - Runs smoke + EWMH Xephyr suites when X11 test deps are present
+  - Auto-uses `xvfb-run` when no `DISPLAY` is set (if available)
+
+## Operations
+
+- Show resolved IPC path from config/env: `cupidwm --print-ipc-socket`
+- Show default client socket path: `cupidwmctl --print-socket`
+- Inspect active IPC socket from a running session: `xprop -root _CUPIDWM_IPC_SOCKET`
+- Override client socket explicitly: `CUPIDWM_IPC_SOCKET=/path/to.sock cupidwmctl status`
+- For recovery/debug steps, see [docs/troubleshooting.md](docs/troubleshooting.md)
 
 ## Release
 

@@ -21,7 +21,11 @@ cupidwm maintains:
 
 cupidwm handles:
 
-- `_NET_WM_STATE` (fullscreen)
+- `_NET_WM_STATE`:
+  - behavioral: `fullscreen`, `modal`, `maximized_horz`, `maximized_vert`, `hidden`, `above`, `below`
+  - state-tracked/advisory: `sticky`, `shaded`, `skip_taskbar`, `skip_pager`, `demands_attention`
+  - WM-managed focus sync: `focused`
+- `_NET_CLOSE_WINDOW` client messages
 - `_NET_ACTIVE_WINDOW` client messages
 - `_NET_WM_DESKTOP` client messages
 - `_NET_CURRENT_DESKTOP` client messages
@@ -40,6 +44,6 @@ workspace desktop metadata, client list exports, and workarea/strut updates.
 
 ## Notes
 
-- Not every EWMH state atom is implemented; unsupported states are ignored.
 - cupidwm is X11-focused and tuned for practical compatibility with panels/pagers.
 - Workarea and strut updates are recalculated on relevant dock property changes.
+- RandR monitor change events trigger monitor/bar/layout refresh; fallback topology probing remains for environments without RandR events.

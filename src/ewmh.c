@@ -86,11 +86,19 @@ void set_frame_extents(Window w)
 			        PropModeReplace, (unsigned char *)extents, 4);
 }
 
+void update_focused_ewmh_state(Client *active)
+{
+	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
+		for (Client *c = workspaces[ws]; c; c = c->next)
+			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_FOCUSED], c == active);
+	}
+}
+
 void update_client_desktop_properties(void)
 {
 	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
 		for (Client *c = workspaces[ws]; c; c = c->next) {
-			long desktop = ws;
+			unsigned long desktop = c->sticky ? 0xFFFFFFFFUL : (unsigned long)ws;
 			XChangeProperty(dpy, c->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
 					        PropModeReplace, (unsigned char *)&desktop, 1);
 		}
