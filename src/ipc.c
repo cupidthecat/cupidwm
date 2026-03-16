@@ -1495,11 +1495,16 @@ void ipc_handle_connection(void)
 		}
 
 		ipc_set_cloexec(client_fd);
+		if (ipc_set_nonblock(client_fd) < 0) {
+			close(client_fd);
+			continue;
+		}
 		ipc_set_recv_timeout(client_fd, 200);
 
 		char buf[512];
 		size_t used = 0;
 		Bool truncated = False;
+		Bool have_line = False;
 		for (;;) {
 			if (used >= sizeof(buf) - 1) {
 				truncated = True;
@@ -1509,8 +1514,10 @@ void ipc_handle_connection(void)
 			ssize_t n = read(client_fd, buf + used, sizeof(buf) - 1 - used);
 			if (n > 0) {
 				used += (size_t)n;
-				if (memchr(buf, '\n', used) || memchr(buf, '\r', used))
+				if (memchr(buf, '\n', used) || memchr(buf, '\r', used)) {
+					have_line = True;
 					break;
+				}
 				continue;
 			}
 
@@ -1540,6 +1547,12 @@ void ipc_handle_connection(void)
 
 		if (used == 0) {
 			ipc_write_reply(client_fd, "error empty command\n");
+			close(client_fd);
+			goto next_client;
+		}
+
+		if (!have_line) {
+			ipc_write_reply(client_fd, "error incomplete command\n");
 			close(client_fd);
 			goto next_client;
 		}
