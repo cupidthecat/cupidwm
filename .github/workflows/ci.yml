@@ -24,7 +24,7 @@ jobs:
             libx11-dev libxinerama-dev libxrandr-dev libxcursor-dev \
             libxft-dev libfontconfig-dev libfreetype6-dev \
             cppcheck shellcheck \
-            xvfb xserver-xephyr x11-utils xdotool xterm
+            xvfb xserver-xephyr x11-utils x11-xserver-utils xdotool xterm
 
       - name: Build release
         run: make CC=${{ matrix.cc }} release
