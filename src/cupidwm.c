@@ -3318,7 +3318,7 @@ void setup(void)
 
 	/* select events wm should look for on root */
 	Mask wm_masks = StructureNotifyMask | SubstructureRedirectMask | SubstructureNotifyMask |
-	                KeyPressMask | PropertyChangeMask;
+	                KeyPressMask | PropertyChangeMask | PointerMotionMask;
 	select_input(root, wm_masks);
 
 	/* grab mouse button events on root window */

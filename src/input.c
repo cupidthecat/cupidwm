@@ -1,5 +1,63 @@
 /* Extracted from cupidwm.c: input and X event handlers. */
 
+static int monitor_at_point(int x_root, int y_root)
+{
+	if (!mons || n_mons <= 0)
+		return 0;
+
+	for (int i = 0; i < n_mons; i++) {
+		if (x_root >= mons[i].x && x_root < mons[i].x + mons[i].w &&
+		    y_root >= mons[i].y && y_root < mons[i].y + mons[i].h)
+			return i;
+	}
+
+	return CLAMP(current_mon, 0, n_mons - 1);
+}
+
+static void activate_monitor(int mon)
+{
+	if (!mons || n_mons <= 0)
+		return;
+
+	mon = CLAMP(mon, 0, n_mons - 1);
+	if (mon == current_mon)
+		return;
+
+	Window prev_focused = focused ? focused->win : None;
+	int prev_ws = current_ws;
+	int prev_mon = current_mon;
+
+	current_mon = mon;
+	sync_active_monitor_state();
+
+	Client *target = workspace_states[current_ws].focused;
+	if (!target || !client_is_visible_on_monitor(target, current_mon))
+		target = ws_focused[current_ws];
+	if (!target || !client_is_visible_on_monitor(target, current_mon))
+		target = first_visible_client(current_ws, current_mon, NULL);
+
+	if (target) {
+		set_input_focus(target, True, False);
+		return;
+	}
+
+	focused = NULL;
+	XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+	XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
+	publish_current_desktop();
+	update_focused_ewmh_state(NULL);
+	update_net_client_list();
+	update_borders();
+	XFlush(dpy);
+
+	if (prev_focused != None || current_ws != prev_ws || current_mon != prev_mon) {
+		char details[192];
+		snprintf(details, sizeof(details), "focused=0x0 workspace=%d monitor=%d",
+		         current_ws + 1, current_mon);
+		ipc_notify_event("focus", details);
+	}
+}
+
 void hdl_button(XEvent *xev)
 {
 	XButtonEvent *xbutton = &xev->xbutton;
@@ -833,6 +891,7 @@ void hdl_enter_ntf(XEvent *xev)
 	Client *c = find_client(w);
 	if (!client_is_visible(c) || c == focused)
 		return;
+	activate_monitor(c->mon);
 	if (c->suppress_focus_until_sec > 0) {
 		long now = (long)time(NULL);
 		if (now <= c->suppress_focus_until_sec)
@@ -1216,6 +1275,8 @@ void hdl_motion(XEvent *xev)
 		if (!user_config.focus_follows_mouse || in_ws_switch)
 			return;
 
+		activate_monitor(monitor_at_point(motion_ev->x_root, motion_ev->y_root));
+
 		Window w = find_toplevel(motion_ev->window);
 		if (!w || w == root) {
 			Window root_ret, child_ret;
@@ -1252,19 +1313,7 @@ void hdl_motion(XEvent *xev)
 	last_motion_time = motion_ev->time;
 
 	/* figure out which monitor the pointer is in right now */
-	int mon = 0;
-	for (int i = 0; i < n_mons; i++) {
-		Bool is_current_mon =
-			motion_ev->x_root >= mons[i].x &&
-			motion_ev->x_root < mons[i].x + mons[i].w &&
-			motion_ev->y_root >= mons[i].y &&
-			motion_ev->y_root < mons[i].y + mons[i].h;
-
-		if (is_current_mon) {
-			mon = i;
-			break;
-		}
-	}
+	int mon = monitor_at_point(motion_ev->x_root, motion_ev->y_root);
 	int work_x, work_y, work_w, work_h;
 	monitor_workarea(mon, &work_x, &work_y, &work_w, &work_h);
 
