@@ -857,26 +857,32 @@ static Bool ipc_parse_layout(const char *name, int *layout_out)
 {
 	if (!name || !layout_out)
 		return False;
+	for (int i = 0; i < (int)LENGTH(layouts); i++) {
+		if (layouts[i].symbol && strcmp(name, layouts[i].symbol) == 0) {
+			*layout_out = i;
+			return True;
+		}
+	}
 
-	if (strcasecmp(name, "tile") == 0 || strcmp(name, "[]=") == 0) {
-		*layout_out = LayoutTile;
-		return True;
-	}
-	if (strcasecmp(name, "monocle") == 0 || strcmp(name, "[M]") == 0) {
-		*layout_out = LayoutMonocle;
-		return True;
-	}
-	if (strcasecmp(name, "floating") == 0 || strcmp(name, "><>") == 0) {
-		*layout_out = LayoutFloating;
-		return True;
-	}
-	if (strcasecmp(name, "fibonacci") == 0 || strcmp(name, "[@]") == 0) {
-		*layout_out = LayoutFibonacci;
-		return True;
-	}
-	if (strcasecmp(name, "dwindle") == 0 || strcmp(name, "[\\]") == 0) {
-		*layout_out = LayoutDwindle;
-		return True;
+	int want_mode = -1;
+	if (strcasecmp(name, "tile") == 0)
+		want_mode = LayoutTile;
+	else if (strcasecmp(name, "monocle") == 0)
+		want_mode = LayoutMonocle;
+	else if (strcasecmp(name, "floating") == 0)
+		want_mode = LayoutFloating;
+	else if (strcasecmp(name, "fibonacci") == 0)
+		want_mode = LayoutFibonacci;
+	else if (strcasecmp(name, "dwindle") == 0)
+		want_mode = LayoutDwindle;
+
+	if (want_mode >= 0) {
+		for (int i = 0; i < (int)LENGTH(layouts); i++) {
+			if (layouts[i].mode == want_mode) {
+				*layout_out = i;
+				return True;
+			}
+		}
 	}
 
 	return False;
@@ -1116,8 +1122,8 @@ static Bool ipc_dispatch(int client_fd, char *cmd)
 	}
 
 	if (strcmp(cmd, "reload") == 0) {
-		reload_config();
 		ipc_reply_ok(client_fd, json);
+		reload_config();
 		return False;
 	}
 

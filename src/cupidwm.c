@@ -4047,6 +4047,19 @@ void restartwm(const Arg *arg)
 	if (!saved_argv || saved_argc <= 0 || !saved_argv[0])
 		return;
 
+	ipc_cleanup();
+	if (dpy) {
+		XSync(dpy, False);
+		if (cursor_move)
+			XFreeCursor(dpy, cursor_move);
+		if (cursor_normal)
+			XFreeCursor(dpy, cursor_normal);
+		if (cursor_resize)
+			XFreeCursor(dpy, cursor_resize);
+		XCloseDisplay(dpy);
+		dpy = NULL;
+	}
+
 	execvp(saved_argv[0], saved_argv);
 	fprintf(stderr, "cupidwm: restart failed for '%s'\n", saved_argv[0]);
 }

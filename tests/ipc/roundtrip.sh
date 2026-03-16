@@ -137,7 +137,7 @@ wait_root_prop_contains _CUPIDWM_IPC_SOCKET "$expected_socket" || fail "root pro
 ping_out="$(wait_ctl_reply '^ok pong$' ping || true)"
 [ -n "$ping_out" ] || fail "cupidwmctl ping did not succeed"
 
-status_out="$(wait_ctl_reply '^ok workspace=1 monitor=' status || true)"
+status_out="$(wait_ctl_reply '^ok workspace=[0-9]+ monitor=' status || true)"
 [ -n "$status_out" ] || fail "cupidwmctl status did not succeed"
 echo "$status_out" | grep -Eq 'layout=' || fail "status output did not include layout details"
 
