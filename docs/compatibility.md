@@ -31,6 +31,11 @@ cupidwm handles:
 - `_NET_CURRENT_DESKTOP` client messages
 - `_NET_WM_STRUT` and `_NET_WM_STRUT_PARTIAL` for dock/workarea reservation
 
+## ICCCM Behaviors
+
+cupidwm sends `WM_TAKE_FOCUS` client messages to windows that advertise the
+protocol through `WM_PROTOCOLS`.
+
 ## Conformance Tests
 
 Dedicated EWMH invariant tests live in `tests/ewmh/invariants.sh` and run via:
@@ -40,7 +45,8 @@ make test-ewmh
 ```
 
 The suite validates root property publication, active-window tracking,
-workspace desktop metadata, client list exports, and workarea/strut updates.
+workspace desktop metadata, client list ordering/exports, and workarea/strut
+updates.
 
 ## Notes
 

@@ -52,6 +52,42 @@ static void ipc_hint_path(char *out, size_t outsz)
 		snprintf(out, outsz, "%.*s/cupidwm.sockpath", (int)n, runtime_dir);
 }
 
+static void ipc_tmp_dir(char *out, size_t outsz)
+{
+	if (!out || outsz == 0)
+		return;
+
+	snprintf(out, outsz, "/tmp/cupidwm-%u", (unsigned)getuid());
+}
+
+static void ipc_default_socket_path(char *out, size_t outsz)
+{
+	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+	char display_tok[64] = {0};
+
+	if (!out || outsz == 0)
+		return;
+
+	ipc_display_token(display_tok, sizeof(display_tok));
+	if (runtime_dir && runtime_dir[0]) {
+		size_t n = strlen(runtime_dir);
+		while (n > 1 && runtime_dir[n - 1] == '/')
+			n--;
+		if (display_tok[0])
+			snprintf(out, outsz, "%.*s/cupidwm-%s.sock", (int)n, runtime_dir, display_tok);
+		else
+			snprintf(out, outsz, "%.*s/cupidwm.sock", (int)n, runtime_dir);
+		return;
+	}
+
+	char tmp_dir[PATH_MAX] = {0};
+	ipc_tmp_dir(tmp_dir, sizeof(tmp_dir));
+	if (display_tok[0])
+		snprintf(out, outsz, "%s/cupidwm-%s.sock", tmp_dir, display_tok);
+	else
+		snprintf(out, outsz, "%s/cupidwm.sock", tmp_dir);
+}
+
 static void ipc_write_hint_file(const char *socket_path)
 {
 	if (!socket_path || !socket_path[0])
@@ -105,25 +141,71 @@ const char *ipc_resolve_socket_path(const char *configured_path, char *out, size
 		return out;
 	}
 
-	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
-	char display_tok[64] = {0};
-	ipc_display_token(display_tok, sizeof(display_tok));
-	if (runtime_dir && runtime_dir[0]) {
-		size_t n = strlen(runtime_dir);
-		while (n > 1 && runtime_dir[n - 1] == '/')
-			n--;
-		if (display_tok[0])
-			snprintf(out, outsz, "%.*s/cupidwm-%s.sock", (int)n, runtime_dir, display_tok);
-		else
-			snprintf(out, outsz, "%.*s/cupidwm.sock", (int)n, runtime_dir);
-		return out;
+	ipc_default_socket_path(out, outsz);
+	return out;
+}
+
+static int ipc_ensure_private_tmp_dir(void)
+{
+	char dir[PATH_MAX] = {0};
+	struct stat st;
+
+	ipc_tmp_dir(dir, sizeof(dir));
+	if (mkdir(dir, 0700) < 0 && errno != EEXIST) {
+		fprintf(stderr, "cupidwm: ipc mkdir %s failed: %s\n", dir, strerror(errno));
+		return -1;
 	}
 
-	if (display_tok[0])
-		snprintf(out, outsz, "/tmp/cupidwm-%u-%s.sock", (unsigned)getuid(), display_tok);
-	else
-		snprintf(out, outsz, "/tmp/cupidwm-%u.sock", (unsigned)getuid());
-	return out;
+	if (lstat(dir, &st) < 0) {
+		fprintf(stderr, "cupidwm: ipc stat %s failed: %s\n", dir, strerror(errno));
+		return -1;
+	}
+	if (!S_ISDIR(st.st_mode)) {
+		fprintf(stderr, "cupidwm: ipc fallback path is not a directory: %s\n", dir);
+		return -1;
+	}
+	if (st.st_uid != getuid()) {
+		fprintf(stderr, "cupidwm: ipc fallback directory is not owned by uid %u: %s\n",
+		        (unsigned)getuid(), dir);
+		return -1;
+	}
+	if ((st.st_mode & 077) != 0) {
+		fprintf(stderr, "cupidwm: ipc fallback directory must be private (0700): %s\n", dir);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int ipc_prepare_socket_path(const char *socket_path)
+{
+	struct stat st;
+
+	if (!socket_path || !socket_path[0])
+		return -1;
+
+	if (lstat(socket_path, &st) < 0) {
+		if (errno == ENOENT)
+			return 0;
+		fprintf(stderr, "cupidwm: ipc stat %s failed: %s\n", socket_path, strerror(errno));
+		return -1;
+	}
+
+	if (!S_ISSOCK(st.st_mode)) {
+		fprintf(stderr, "cupidwm: ipc path exists and is not a socket: %s\n", socket_path);
+		return -1;
+	}
+	if (st.st_uid != getuid()) {
+		fprintf(stderr, "cupidwm: ipc socket is not owned by uid %u: %s\n",
+		        (unsigned)getuid(), socket_path);
+		return -1;
+	}
+	if (unlink(socket_path) < 0) {
+		fprintf(stderr, "cupidwm: ipc unlink %s failed: %s\n", socket_path, strerror(errno));
+		return -1;
+	}
+
+	return 0;
 }
 
 static void ipc_publish_socket_path(const char *path)
@@ -462,6 +544,11 @@ int ipc_setup(void)
 	if (!ipc_resolve_socket_path(user_config.ipc_socket_path, socket_path, sizeof(socket_path)))
 		return -1;
 
+	if ((!user_config.ipc_socket_path || !user_config.ipc_socket_path[0]) &&
+	    (!getenv("XDG_RUNTIME_DIR") || !getenv("XDG_RUNTIME_DIR")[0]) &&
+	    ipc_ensure_private_tmp_dir() < 0)
+		return -1;
+
 	struct sockaddr_un addr;
 	memset(&addr, 0, sizeof(addr));
 	addr.sun_family = AF_UNIX;
@@ -482,12 +569,15 @@ int ipc_setup(void)
 	ipc_set_cloexec(fd);
 	ipc_set_nonblock(fd);
 
-	unlink(socket_path);
+	if (ipc_prepare_socket_path(socket_path) < 0) {
+		close(fd);
+		return -1;
+	}
 
 	mode_t oldmask = umask(0077);
 	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 		umask(oldmask);
-		perror("cupidwm: ipc bind");
+		fprintf(stderr, "cupidwm: ipc bind %s failed: %s\n", socket_path, strerror(errno));
 		close(fd);
 		return -1;
 	}

@@ -28,6 +28,9 @@ make clean && make
 4. Query socket directly:
    - `cupidwmctl --print-socket`
    - `cupidwmctl status`
+5. If `$XDG_RUNTIME_DIR` is unset, inspect the fallback directory:
+   - `ls -ld /tmp/cupidwm-$(id -u)`
+   - It must exist, be owned by you, and be mode `0700`.
 
 ## Integration tests are skipped
 
