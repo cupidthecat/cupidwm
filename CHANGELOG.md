@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-03-17
+
+- Fixed EWMH client list publication so `_NET_CLIENT_LIST` now follows initial
+  mapping order and `_NET_CLIENT_LIST_STACKING` follows live stacking order.
+- Extended the EWMH Xephyr suite to assert client-list ordering and stacking
+  updates after a raise/focus change.
+- Hardened IPC `/tmp` fallback paths to use a private per-user directory and to
+  reject unexpected pre-existing files or ownership/permission mismatches.
+- Added `cupidwmctl.1`, installed it via `make install`, and included it in
+  release tarballs.
+- Added a dedicated IPC roundtrip Xephyr test plus a CI step that builds with
+  IPC enabled for that scenario.
+- Added `.gitignore` and stopped tracking generated `config.h` so the repo
+  matches the documented local-config workflow.
+
 ## 2026-03-16
 
 - Restored CI with GitHub Actions (`.github/workflows/ci.yml`) including gcc/clang matrix,

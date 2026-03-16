@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -42,8 +43,8 @@ static void display_token(char *out, size_t outsz)
 
 static void default_socket_path(char *out, size_t outsz)
 {
-	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
 	char display_tok[64] = {0};
+	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
 	display_token(display_tok, sizeof(display_tok));
 	if (runtime_dir && runtime_dir[0]) {
 		size_t n = strlen(runtime_dir);
@@ -56,10 +57,12 @@ static void default_socket_path(char *out, size_t outsz)
 		return;
 	}
 
+	char tmp_dir[PATH_MAX] = {0};
+	snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/cupidwm-%u", (unsigned)getuid());
 	if (display_tok[0])
-		snprintf(out, outsz, "/tmp/cupidwm-%u-%s.sock", (unsigned)getuid(), display_tok);
+		snprintf(out, outsz, "%s/cupidwm-%s.sock", tmp_dir, display_tok);
 	else
-		snprintf(out, outsz, "/tmp/cupidwm-%u.sock", (unsigned)getuid());
+		snprintf(out, outsz, "%s/cupidwm.sock", tmp_dir);
 }
 
 static void hint_path(char *out, size_t outsz, const char *display_tok)
@@ -174,6 +177,18 @@ static int connect_socket(const char *path)
 	return fd;
 }
 
+static int set_recv_timeout(int fd, int timeout_ms)
+{
+	struct timeval tv;
+
+	if (fd < 0 || timeout_ms < 0)
+		return -1;
+
+	tv.tv_sec = timeout_ms / 1000;
+	tv.tv_usec = (timeout_ms % 1000) * 1000;
+	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
 int main(int argc, char **argv)
 {
 	const char *socket_path = NULL;
@@ -256,6 +271,7 @@ int main(int argc, char **argv)
 	int fd = connect_socket(socket_path);
 	if (fd < 0)
 		return 1;
+	set_recv_timeout(fd, 1000);
 
 	char payload[560];
 	snprintf(payload, sizeof(payload), "%s\n", cmd);
@@ -285,6 +301,11 @@ int main(int argc, char **argv)
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				fprintf(stderr, "cupidwmctl: timed out waiting for reply from %s\n", socket_path);
+				close(fd);
+				return 1;
+			}
 			perror("cupidwmctl: read");
 			close(fd);
 			return 1;

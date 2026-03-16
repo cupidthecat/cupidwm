@@ -1,5 +1,44 @@
 /* Extracted from cupidwm.c: EWMH atoms and properties. */
 
+static int client_map_seq_cmp(const void *lhs, const void *rhs)
+{
+	const Client *const *a = lhs;
+	const Client *const *b = rhs;
+
+	if ((*a)->map_seq < (*b)->map_seq)
+		return -1;
+	if ((*a)->map_seq > (*b)->map_seq)
+		return 1;
+	return 0;
+}
+
+static int collect_managed_clients(Client **clients, int max_clients)
+{
+	int n = 0;
+
+	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
+		for (Client *c = workspaces[ws]; c; c = c->next) {
+			if (n >= max_clients) {
+				fprintf(stderr, "cupidwm: max clients reached while exporting _NET_CLIENT_LIST\n");
+				return n;
+			}
+			clients[n++] = c;
+		}
+	}
+
+	return n;
+}
+
+static Bool client_list_contains(Client *const *clients, int n, Client *target)
+{
+	for (int i = 0; i < n; i++) {
+		if (clients[i] == target)
+			return True;
+	}
+
+	return False;
+}
+
 Bool window_is_dock(Window w)
 {
 	Atom actual_type = None;
@@ -107,21 +146,46 @@ void update_client_desktop_properties(void)
 
 void update_net_client_list(void)
 {
-	Window wins[MAX_CLIENTS];
-	int n = 0;
-	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
-		for (Client *c = workspaces[ws]; c; c = c->next) {
-			if (n >= MAX_CLIENTS) {
-				fprintf(stderr, "cupidwm: max clients reached while exporting _NET_CLIENT_LIST\n");
-				goto publish_client_list;
-			}
-			wins[n++] = c->win;
+	Client *clients[MAX_CLIENTS];
+	Client *stacking_clients[MAX_CLIENTS];
+	Window map_list[MAX_CLIENTS];
+	Window stacking_list[MAX_CLIENTS];
+	int n_clients = collect_managed_clients(clients, MAX_CLIENTS);
+	int n_stacking = 0;
+
+	if (n_clients > 1)
+		qsort(clients, (size_t)n_clients, sizeof(clients[0]), client_map_seq_cmp);
+
+	for (int i = 0; i < n_clients; i++)
+		map_list[i] = clients[i]->win;
+
+	Window root_ret = None;
+	Window parent_ret = None;
+	Window *children = NULL;
+	unsigned int n_children = 0;
+	if (XQueryTree(dpy, root, &root_ret, &parent_ret, &children, &n_children)) {
+		for (unsigned int i = 0; i < n_children && n_stacking < n_clients; i++) {
+			Client *c = find_client(children[i]);
+			if (!c || client_list_contains(stacking_clients, n_stacking, c))
+				continue;
+			stacking_clients[n_stacking] = c;
+			stacking_list[n_stacking++] = c->win;
 		}
 	}
+	if (children)
+		XFree(children);
 
-publish_client_list:
-	XChangeProperty(dpy, root, atoms[ATOM_NET_CLIENT_LIST], XA_WINDOW, 32, PropModeReplace, (unsigned char *)wins, n);
-	XChangeProperty(dpy, root, atoms[ATOM_NET_CLIENT_LIST_STACKING], XA_WINDOW, 32, PropModeReplace, (unsigned char *)wins, n);
+	for (int i = 0; i < n_clients && n_stacking < n_clients; i++) {
+		if (client_list_contains(stacking_clients, n_stacking, clients[i]))
+			continue;
+		stacking_clients[n_stacking] = clients[i];
+		stacking_list[n_stacking++] = clients[i]->win;
+	}
+
+	XChangeProperty(dpy, root, atoms[ATOM_NET_CLIENT_LIST], XA_WINDOW, 32, PropModeReplace,
+	                (unsigned char *)map_list, n_clients);
+	XChangeProperty(dpy, root, atoms[ATOM_NET_CLIENT_LIST_STACKING], XA_WINDOW, 32, PropModeReplace,
+	                (unsigned char *)stacking_list, n_stacking);
 }
 
 void update_struts(void)

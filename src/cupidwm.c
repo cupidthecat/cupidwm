@@ -306,6 +306,7 @@ int reserve_right = 0;
 int reserve_top = 0;
 int reserve_bottom = 0;
 int current_layout = 0;
+unsigned long next_client_map_seq = 1;
 XFontStruct *bar_font = NULL;
 XftFont *bar_xft_font = NULL;
 GC bar_gc;
@@ -615,6 +616,7 @@ Client *add_client(Window w, int ws)
 	}
 
 	c->win = w;
+	c->map_seq = next_client_map_seq++;
 	c->next = NULL;
 	c->ws = ws;
 	c->pid = get_pid(w);
@@ -718,6 +720,7 @@ Client *add_client(Window w, int ws)
 	XChangeProperty(dpy, w, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
 				        PropModeReplace, (unsigned char *)&desktop, 1);
 	XRaiseWindow(dpy, w);
+	update_net_client_list();
 	return c;
 }
 
@@ -755,6 +758,7 @@ void apply_fullscreen(Client *c, Bool on)
 		c->h = wh;
 
 		XRaiseWindow(dpy, c->win);
+		update_net_client_list();
 		window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_FULLSCREEN], True);
 	}
 	else {
@@ -2091,6 +2095,8 @@ void run(void)
 	while (running) {
 		long timeout_ms = -1;
 		time_t now = time(NULL);
+		Bool handled_xevents = False;
+		int ipcfd = ipc_get_server_fd();
 
 		if (user_config.status_interval_sec > 0) {
 			if (last_status_tick == 0)
@@ -2107,10 +2113,14 @@ void run(void)
 			timeout_ms = (timeout_ms < 0) ? focus_poll_ms : MIN(timeout_ms, focus_poll_ms);
 		}
 
+		if (ipcfd >= 0)
+			ipc_handle_connection();
+
 		if (XPending(dpy)) {
 			while (XPending(dpy)) {
 				XNextEvent(dpy, &xev);
 				handle_xevent(&xev);
+				handled_xevents = True;
 			}
 		} else {
 			fd_set fds;
@@ -2118,7 +2128,6 @@ void run(void)
 			FD_SET(xfd, &fds);
 			int maxfd = xfd;
 
-			int ipcfd = ipc_get_server_fd();
 			if (ipcfd >= 0) {
 				FD_SET(ipcfd, &fds);
 				maxfd = MAX(maxfd, ipcfd);
@@ -2145,10 +2154,14 @@ void run(void)
 					while (XPending(dpy)) {
 						XNextEvent(dpy, &xev);
 						handle_xevent(&xev);
+						handled_xevents = True;
 					}
 				}
 			}
 		}
+
+		if (handled_xevents)
+			update_net_client_list();
 
 		if (!running)
 			break;
@@ -2363,6 +2376,7 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 			XChangeProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW], XA_WINDOW, 32,
 					PropModeReplace, (unsigned char *)&w, 1);
 			update_focused_ewmh_state(c);
+			update_net_client_list();
 
 			update_borders();
 
@@ -2377,6 +2391,7 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 			focused = NULL;
 			ws_focused[current_ws] = NULL;
 			update_focused_ewmh_state(NULL);
+			update_net_client_list();
 			update_borders();
 		}
 

@@ -41,12 +41,16 @@ preflight-test-scripts:
 	@test -f ./scripts/install-deps.sh || { echo "missing required script: ./scripts/install-deps.sh"; exit 1; }
 	@test -f ./tests/ewmh/invariants.sh || { echo "missing required script: ./tests/ewmh/invariants.sh"; exit 1; }
 	@test -f ./tests/ewmh/send-client-message.c || { echo "missing required file: ./tests/ewmh/send-client-message.c"; exit 1; }
+	@test -f ./tests/ipc/roundtrip.sh || { echo "missing required script: ./tests/ipc/roundtrip.sh"; exit 1; }
 
 test-smoke: preflight-test-scripts cupidwm
 	bash ./scripts/smoke-xephyr.sh ./cupidwm
 
 test-ewmh: preflight-test-scripts cupidwm
 	bash ./tests/ewmh/invariants.sh ./cupidwm
+
+test-ipc: preflight-test-scripts cupidwm cupidwmctl
+	bash ./tests/ipc/roundtrip.sh ./cupidwm ./cupidwmctl
 
 test: test-smoke test-ewmh
 
@@ -98,7 +102,7 @@ clean:
 dist: clean
 	mkdir -p cupidwm-${VERSION}
 	cp -R LICENSE LICENSES THIRD_PARTY_NOTICE.md SECURITY.md CHANGELOG.md \
-		Makefile README.md config.def.h config.mk cupidwm.1 cupidwm.desktop \
+		Makefile README.md config.def.h config.mk cupidwm.1 cupidwmctl.1 cupidwm.desktop \
 		src scripts tests tools docs img undefined-medium.ttf cupidwm-${VERSION}
 	@if [ -d .github ]; then cp -R .github cupidwm-${VERSION}; fi
 	tar -cf cupidwm-${VERSION}.tar cupidwm-${VERSION}
@@ -112,10 +116,12 @@ distcheck: dist
 	test -f "$$tmpdir/cupidwm-${VERSION}/README.md"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/SECURITY.md"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/THIRD_PARTY_NOTICE.md"; \
+	test -f "$$tmpdir/cupidwm-${VERSION}/cupidwmctl.1"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/docs/configuration.md"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/src/cupidwm.c"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/scripts/smoke-xephyr.sh"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/tests/ewmh/invariants.sh"; \
+	test -f "$$tmpdir/cupidwm-${VERSION}/tests/ipc/roundtrip.sh"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/tools/cupidwmctl.c"; \
 	rm -rf "$$tmpdir"; \
 	echo "distcheck passed"
@@ -129,6 +135,8 @@ install: all
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	sed "s/VERSION/${VERSION}/g" < cupidwm.1 > ${DESTDIR}${MANPREFIX}/man1/cupidwm.1
 	chmod 644 ${DESTDIR}${MANPREFIX}/man1/cupidwm.1
+	sed "s/VERSION/${VERSION}/g" < cupidwmctl.1 > ${DESTDIR}${MANPREFIX}/man1/cupidwmctl.1
+	chmod 644 ${DESTDIR}${MANPREFIX}/man1/cupidwmctl.1
 	mkdir -p ${DESTDIR}${PREFIX}/share/xsessions
 	cp -f cupidwm.desktop ${DESTDIR}${PREFIX}/share/xsessions/cupidwm.desktop
 	chmod 644 ${DESTDIR}${PREFIX}/share/xsessions/cupidwm.desktop
@@ -143,9 +151,10 @@ uninstall:
 	rm -f ${DESTDIR}${PREFIX}/bin/cupidwm \
 		${DESTDIR}${PREFIX}/bin/cupidwmctl \
 		${DESTDIR}${MANPREFIX}/man1/cupidwm.1 \
+		${DESTDIR}${MANPREFIX}/man1/cupidwmctl.1 \
 		${DESTDIR}${PREFIX}/share/xsessions/cupidwm.desktop
 
 uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
-.PHONY: all release debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh preflight-test-scripts
+.PHONY: all release debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-ipc preflight-test-scripts

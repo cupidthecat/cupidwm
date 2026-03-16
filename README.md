@@ -52,6 +52,7 @@ Reference docs:
 
 - Smoke test (Xephyr): `make test-smoke`
 - EWMH invariants suite (Xephyr): `make test-ewmh`
+- IPC roundtrip suite (Xephyr, requires an IPC-enabled build): `make test-ipc`
 - Full local gate: `make check`
   - Builds sanitizer debug binary
   - Runs `cppcheck` and `shellcheck` when available
@@ -64,6 +65,7 @@ Reference docs:
 - Show default client socket path: `cupidwmctl --print-socket`
 - Inspect active IPC socket from a running session: `xprop -root _CUPIDWM_IPC_SOCKET`
 - Override client socket explicitly: `CUPIDWM_IPC_SOCKET=/path/to.sock cupidwmctl status`
+- Fallback socket base without `$XDG_RUNTIME_DIR`: `/tmp/cupidwm-<uid>/`
 - For recovery/debug steps, see [docs/troubleshooting.md](docs/troubleshooting.md)
 
 ## Release

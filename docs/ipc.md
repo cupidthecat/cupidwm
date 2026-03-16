@@ -13,9 +13,11 @@ Set in `config.h`:
 Default socket path resolution:
 
 1. `$XDG_RUNTIME_DIR/cupidwm-<display>.sock` (or `cupidwm.sock` if display is unavailable)
-2. `/tmp/cupidwm-<uid>-<display>.sock` (or `/tmp/cupidwm-<uid>.sock`)
+2. `/tmp/cupidwm-<uid>/cupidwm-<display>.sock` (or `/tmp/cupidwm-<uid>/cupidwm.sock`)
 
 Socket permissions are restricted to `0600`.
+When falling back to `/tmp`, cupidwm creates and requires a private `0700`
+per-user directory before binding the socket.
 
 ## Socket Discovery
 
@@ -66,4 +68,5 @@ cupidwmctl -s /path/to/cupidwm.sock status
 - Commands are intentionally small and local-only.
 - Use this only on trusted local sessions.
 - Prefer paths under `$XDG_RUNTIME_DIR` and avoid world-accessible directories.
+- The `/tmp` fallback refuses directories or socket paths it does not own.
 - IPC read handling uses a short socket receive timeout to avoid event-loop stalls from hung clients.

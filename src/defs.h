@@ -118,6 +118,7 @@ typedef struct {
 
 typedef struct Client {
 	Window win;
+	unsigned long map_seq;
 	int x, y, h, w;
 	int orig_x, orig_y, orig_w, orig_h;
 	int max_restore_x, max_restore_y, max_restore_w, max_restore_h;

@@ -117,6 +117,20 @@ wait_window_map_state() {
 	return 1
 }
 
+wait_prop_order() {
+	local target="$1"
+	local prop="$2"
+	local first="$3"
+	local second="$4"
+	for _ in $(seq 1 80); do
+		if prop_order_matches "$target" "$prop" "$first" "$second"; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
 spawn_xterm() {
 	local tag="$1"
 	shift
@@ -159,21 +173,34 @@ pid_b="$last_spawn_pid"
 wid_b="$(wait_visible_window_by_pid "$pid_b" || wait_visible_window_by_name '^ewmh-b$' || true)"
 [ -n "$wid_b" ] || fail "failed to open second test window"
 
+hex_a="0x$(printf '%x' "$wid_a")"
+hex_b="0x$(printf '%x' "$wid_b")"
+
 # client lists should include both windows
-assert_prop_contains root _NET_CLIENT_LIST "0x$(printf '%x' "$wid_a")"
-assert_prop_contains root _NET_CLIENT_LIST "0x$(printf '%x' "$wid_b")"
-assert_prop_contains root _NET_CLIENT_LIST_STACKING "0x$(printf '%x' "$wid_a")"
-assert_prop_contains root _NET_CLIENT_LIST_STACKING "0x$(printf '%x' "$wid_b")"
+assert_prop_contains root _NET_CLIENT_LIST "$hex_a"
+assert_prop_contains root _NET_CLIENT_LIST "$hex_b"
+assert_prop_contains root _NET_CLIENT_LIST_STACKING "$hex_a"
+assert_prop_contains root _NET_CLIENT_LIST_STACKING "$hex_b"
+wait_prop_order root _NET_CLIENT_LIST "$hex_a" "$hex_b" || fail "_NET_CLIENT_LIST did not preserve initial mapping order"
+wait_prop_order root _NET_CLIENT_LIST_STACKING "$hex_a" "$hex_b" || fail "_NET_CLIENT_LIST_STACKING did not reflect initial stacking order"
+
+"${MSG_TOOL}" "$wid_a" _NET_WM_STATE 1 _NET_WM_STATE_FULLSCREEN 0 1 || fail "failed to send fullscreen-add client message"
+sleep 0.3
+wait_prop_order root _NET_CLIENT_LIST "$hex_a" "$hex_b" || fail "_NET_CLIENT_LIST changed after raising a window"
+wait_prop_order root _NET_CLIENT_LIST_STACKING "$hex_b" "$hex_a" || fail "_NET_CLIENT_LIST_STACKING did not update after fullscreen raise"
+
+"${MSG_TOOL}" "$wid_a" _NET_WM_STATE 0 _NET_WM_STATE_FULLSCREEN 0 1 || fail "failed to send fullscreen-remove client message"
+sleep 0.3
 
 # active window should track focus changes
 xdotool windowactivate "$wid_a" >/dev/null 2>&1 || true
 sleep 0.2
-assert_prop_contains root _NET_ACTIVE_WINDOW "0x$(printf '%x' "$wid_a")"
+assert_prop_contains root _NET_ACTIVE_WINDOW "$hex_a"
 assert_prop_contains "$wid_a" _NET_WM_STATE _NET_WM_STATE_FOCUSED
 
 xdotool windowactivate "$wid_b" >/dev/null 2>&1 || true
 sleep 0.2
-assert_prop_contains root _NET_ACTIVE_WINDOW "0x$(printf '%x' "$wid_b")"
+assert_prop_contains root _NET_ACTIVE_WINDOW "$hex_b"
 assert_prop_contains "$wid_b" _NET_WM_STATE _NET_WM_STATE_FOCUSED
 assert_prop_not_contains "$wid_a" _NET_WM_STATE _NET_WM_STATE_FOCUSED
 
