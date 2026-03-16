@@ -1221,6 +1221,7 @@ Client *add_client(Window w, int ws)
 	c->mapped = True;
 	c->no_focus_on_map = False;
 	c->suppress_enter_focus_once = False;
+	c->suppress_focus_until_sec = 0;
 	c->ignore_unmap_events = 0;
 	c->custom_stack_height = 0;
 
@@ -3123,11 +3124,19 @@ void run(void)
 				Window w = find_toplevel(child_ret);
 				if (w && w != root) {
 					Client *c = find_client(w);
-					if (c && client_is_visible(c) && c != focused)
+					if (c && client_is_visible(c) && c != focused) {
+						if (c->suppress_focus_until_sec > 0) {
+							long now_sec = (long)time(NULL);
+							if (now_sec <= c->suppress_focus_until_sec)
+								goto skip_pointer_focus;
+							c->suppress_focus_until_sec = 0;
+						}
 						set_input_focus(c, True, False);
+					}
 				}
 			}
 		}
+	skip_pointer_focus: ;
 
 		now = time(NULL);
 		if (!randr_enabled && (last_monitor_probe == 0 || now - last_monitor_probe >= 2)) {

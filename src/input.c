@@ -827,6 +827,12 @@ void hdl_enter_ntf(XEvent *xev)
 	Client *c = find_client(w);
 	if (!client_is_visible(c) || c == focused)
 		return;
+	if (c->suppress_focus_until_sec > 0) {
+		long now = (long)time(NULL);
+		if (now <= c->suppress_focus_until_sec)
+			return;
+		c->suppress_focus_until_sec = 0;
+	}
 	if (c->suppress_enter_focus_once) {
 		c->suppress_enter_focus_once = False;
 		return;
@@ -977,8 +983,10 @@ void hdl_map_req(XEvent *xev)
 					set_input_focus(c, True, True);
 				return; /* set_input_focus already calls update_borders */
 			}
-				if (c->no_focus_on_map)
+				if (c->no_focus_on_map) {
 					c->suppress_enter_focus_once = True;
+					c->suppress_focus_until_sec = (long)time(NULL) + 1;
+				}
 			update_borders();
 		}
 		return;
@@ -1187,8 +1195,10 @@ void hdl_map_req(XEvent *xev)
 		set_input_focus(focused, True, True);
 		return;
 	}
-	if (c->no_focus_on_map)
+	if (c->no_focus_on_map) {
 		c->suppress_enter_focus_once = True;
+		c->suppress_focus_until_sec = (long)time(NULL) + 1;
+}
 	update_borders();
 }
 

@@ -162,6 +162,7 @@ typedef struct Client {
 	Bool mapped;
 	Bool no_focus_on_map;
 	Bool suppress_enter_focus_once;
+	long suppress_focus_until_sec;
 	int ignore_unmap_events;
 	pid_t pid;
 	struct Client *next;
