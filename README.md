@@ -9,7 +9,7 @@ built-in status rendering.
 ## Highlights
 
 - 9 workspaces with per-monitor views and move-to-workspace support
-- Layouts: tile, monocle, floating, fibonacci, dwindle
+- Layouts: tile, monocle, floating, fibonacci, dwindle, grid, columns
 - Scratchpads, swallowing, and monitor focus/move actions
 - Geometry-aware directional focus/swap/move actions for tiled workflows
 - Expressive rules: monitor target, geometry/centering, sticky/skip defaults, scratchpad slot, and no-focus-on-map
@@ -23,6 +23,7 @@ built-in status rendering.
 - Optional local IPC socket + `cupidwmctl` control tool (disabled by default)
 - IPC supports query/control commands, `--json` output, and `subscribe` event streaming, with nonblocking accepted sockets staged in a pending-client queue and a short command deadline so slow writers cannot stall the WM loop
 - IPC JSON output now escapes dynamic string fields (status text, labels, event details, and errors) for robust machine parsing
+- Workspace names can be updated at runtime via IPC and are exported through `_NET_DESKTOP_NAMES`
 - Bar tab clicks support focus/toggle workflows (left click focus, right click toggle)
 - Supports slstatus, dmenu, other suckless software
 
@@ -86,6 +87,7 @@ Reference docs:
 - Stream IPC events: `cupidwmctl --json subscribe`
 - Directional focus/swap/move via IPC: `cupidwmctl focus left`, `cupidwmctl swap right`, `cupidwmctl move down`
 - Directional monitor control via IPC: `cupidwmctl focus monitor-left`, `cupidwmctl move-monitor right`
+- Rename a workspace: `cupidwmctl workspace-name set 3 coding`
 - Fallback socket base without `$XDG_RUNTIME_DIR`: `/tmp/cupidwm-<uid>/`
 - Session state file path: `$XDG_RUNTIME_DIR/cupidwm-<display>.session` (or `/tmp/cupidwm-<uid>/...` fallback)
 - Enable shell completion for `cupidwmctl`: `source completions/cupidwmctl.bash`

@@ -21,6 +21,7 @@
 #define MAX_ITEMS            256
 #define MIN_WINDOW_SIZE      20
 #define PATH_MAX             4096
+#define WORKSPACE_NAME_MAX   64
 #define STATUS_MAX_SEGMENTS  16
 #define STATUS_MAX_LABEL     128
 #define STATUS_MAX_ACTION    256
@@ -86,6 +87,8 @@ enum {
 	LayoutMonocle = 2,
 	LayoutFibonacci = 3,
 	LayoutDwindle = 4,
+	LayoutGrid = 5,
+	LayoutColumns = 6,
 };
 
 enum {

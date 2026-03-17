@@ -78,6 +78,12 @@ Bool client_is_visible(const Client *c);
 Bool client_is_visible_on_monitor(const Client *c, int mon);
 void sync_active_monitor_state(void);
 void publish_current_desktop(void);
+void publish_desktop_names(void);
+void workspace_names_init_defaults(void);
+const char *workspace_name_for(int ws);
+Bool workspace_name_set(int ws, const char *name);
+void workspace_name_reset(int ws);
+int layout_index_from_mode(int mode);
 Client *first_visible_client(int ws, int mon, Client *skip);
 void grab_button(Mask button, Mask mod, Window w, Bool owner_events, Mask masks);
 void grab_keys(void);
@@ -376,6 +382,7 @@ GC bar_gc;
 char stext[256] = "";
 char status_action_cmd[STATUS_MAX_SEGMENTS][3][STATUS_MAX_ACTION] = {{{0}}};
 Bool status_override_active = False;
+char workspace_names[NUM_WORKSPACES][WORKSPACE_NAME_MAX] = {{0}};
 int saved_argc = 0;
 char **saved_argv = NULL;
 static char session_state_path_buf[PATH_MAX] = {0};
@@ -419,10 +426,179 @@ static WorkspaceState *workspace_state_for(int ws)
 	return &workspace_states[ws];
 }
 
+static void workspace_name_trim_copy(char *dst, size_t dstsz, const char *src)
+{
+	if (!dst || dstsz == 0)
+		return;
+
+	dst[0] = '\0';
+	if (!src)
+		return;
+
+	while (*src == ' ' || *src == '\t')
+		src++;
+
+	size_t len = strlen(src);
+	while (len > 0 &&
+	       (src[len - 1] == ' ' || src[len - 1] == '\t' ||
+	        src[len - 1] == '\n' || src[len - 1] == '\r')) {
+		len--;
+	}
+
+	if (len >= dstsz)
+		len = dstsz - 1;
+
+	if (len > 0)
+		memcpy(dst, src, len);
+	dst[len] = '\0';
+}
+
+static void workspace_name_default(int ws, char *out, size_t outsz)
+{
+	if (!out || outsz == 0)
+		return;
+
+	out[0] = '\0';
+	if (ws < 0 || ws >= NUM_WORKSPACES)
+		return;
+
+	if (tags[ws] && tags[ws][0])
+		workspace_name_trim_copy(out, outsz, tags[ws]);
+	if (!out[0])
+		snprintf(out, outsz, "%d", ws + 1);
+}
+
+static Bool workspace_name_assign(int ws, const char *name, Bool fallback_default, Bool *changed_out)
+{
+	if (changed_out)
+		*changed_out = False;
+	if (ws < 0 || ws >= NUM_WORKSPACES)
+		return False;
+
+	char normalized[WORKSPACE_NAME_MAX];
+	workspace_name_trim_copy(normalized, sizeof(normalized), name);
+	if (!normalized[0] && fallback_default)
+		workspace_name_default(ws, normalized, sizeof(normalized));
+	if (!normalized[0])
+		return False;
+
+	Bool changed = strcmp(workspace_names[ws], normalized) != 0;
+	if (changed)
+		snprintf(workspace_names[ws], sizeof(workspace_names[ws]), "%s", normalized);
+	if (changed_out)
+		*changed_out = changed;
+	return True;
+}
+
+int layout_index_from_mode(int mode)
+{
+	for (int i = 0; i < (int)LENGTH(layouts); i++) {
+		if (layouts[i].mode == mode)
+			return i;
+	}
+	return -1;
+}
+
+void workspace_names_init_defaults(void)
+{
+	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
+		Bool changed = False;
+		workspace_name_assign(ws, NULL, True, &changed);
+		(void)changed;
+	}
+}
+
+const char *workspace_name_for(int ws)
+{
+	if (ws < 0 || ws >= NUM_WORKSPACES)
+		return "";
+	return workspace_names[ws];
+}
+
+void publish_desktop_names(void)
+{
+	if (!dpy || root == None)
+		return;
+	if (atoms[ATOM_NET_DESKTOP_NAMES] == None || atoms[ATOM_UTF8_STRING] == None)
+		return;
+
+	size_t total = 0;
+	for (int ws = 0; ws < NUM_WORKSPACES; ws++)
+		total += strlen(workspace_name_for(ws)) + 1;
+	if (total == 0)
+		total = 1;
+
+	unsigned char *buf = calloc(total, sizeof(unsigned char));
+	if (!buf)
+		return;
+
+	size_t off = 0;
+	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
+		const char *name = workspace_name_for(ws);
+		size_t len = strlen(name);
+		if (off + len >= total)
+			break;
+		memcpy(buf + off, name, len);
+		off += len + 1;
+	}
+
+	XChangeProperty(dpy, root, atoms[ATOM_NET_DESKTOP_NAMES], atoms[ATOM_UTF8_STRING], 8,
+	                PropModeReplace, (unsigned char *)buf, (int)total);
+	free(buf);
+}
+
+static void workspace_name_sync_state(int ws)
+{
+	if (ws < 0 || ws >= NUM_WORKSPACES)
+		return;
+
+	publish_desktop_names();
+	drawbars();
+	session_state_save();
+	{
+		char details[192];
+		snprintf(details, sizeof(details), "workspace=%d name=%s", ws + 1, workspace_name_for(ws));
+		ipc_notify_event("workspace_name", details);
+	}
+}
+
+Bool workspace_name_set(int ws, const char *name)
+{
+	Bool changed = False;
+	if (!workspace_name_assign(ws, name, False, &changed))
+		return False;
+	if (changed)
+		workspace_name_sync_state(ws);
+	return True;
+}
+
+void workspace_name_reset(int ws)
+{
+	Bool changed = False;
+	if (!workspace_name_assign(ws, NULL, True, &changed))
+		return;
+	if (changed)
+		workspace_name_sync_state(ws);
+}
+
 static int workspace_layout_for(int ws)
 {
 	WorkspaceState *state = workspace_state_for(ws);
-	return state ? state->layout : 0;
+	int fallback = layout_index_from_mode(LayoutTile);
+	if (fallback < 0)
+		fallback = 0;
+	if (!state)
+		return fallback;
+
+	int layout = state->layout;
+	if (layout >= 0 && layout < (int)LENGTH(layouts))
+		return layout;
+
+	int by_mode = layout_index_from_mode(layout);
+	if (by_mode >= 0)
+		return by_mode;
+
+	return fallback;
 }
 
 static int workspace_gaps_for(int ws)
@@ -1004,6 +1180,7 @@ void session_state_save(void)
 		fprintf(f, "workspace %d %d\n", ws, workspace_layout_for(ws));
 		Window fw = workspace_states[ws].focused ? workspace_states[ws].focused->win : None;
 		fprintf(f, "focus %d 0x%lx\n", ws, (unsigned long)fw);
+		fprintf(f, "wsname %d %s\n", ws, workspace_name_for(ws));
 	}
 
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
@@ -1039,6 +1216,8 @@ void session_state_restore(void)
 	int restore_mon_prev[MAX_MONITORS];
 	int restore_ws_layout[NUM_WORKSPACES];
 	Window restore_ws_focus[NUM_WORKSPACES];
+	char restore_ws_name[NUM_WORKSPACES][WORKSPACE_NAME_MAX];
+	Bool restore_ws_name_set[NUM_WORKSPACES];
 	Window restore_sp_win[MAX_SCRATCHPADS];
 	int restore_sp_enabled[MAX_SCRATCHPADS];
 
@@ -1049,6 +1228,8 @@ void session_state_restore(void)
 	for (int i = 0; i < NUM_WORKSPACES; i++) {
 		restore_ws_layout[i] = -1;
 		restore_ws_focus[i] = None;
+		restore_ws_name[i][0] = '\0';
+		restore_ws_name_set[i] = False;
 	}
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
 		restore_sp_win[i] = None;
@@ -1080,6 +1261,19 @@ void session_state_restore(void)
 				restore_ws_layout[a] = b;
 			continue;
 		}
+		if (strncmp(line, "wsname ", 7) == 0) {
+			char *name_ptr = line + 7;
+			char *end = NULL;
+			long ws = strtol(name_ptr, &end, 10);
+			if (end != name_ptr && ws >= 0 && ws < NUM_WORKSPACES) {
+				while (*end == ' ' || *end == '\t')
+					end++;
+				workspace_name_trim_copy(restore_ws_name[ws], sizeof(restore_ws_name[ws]), end);
+				if (restore_ws_name[ws][0])
+					restore_ws_name_set[ws] = True;
+			}
+			continue;
+		}
 		if (sscanf(line, "focus %d 0x%lx", &a, &w) == 2) {
 			if (a >= 0 && a < NUM_WORKSPACES)
 				restore_ws_focus[a] = (Window)w;
@@ -1101,6 +1295,14 @@ void session_state_restore(void)
 			continue;
 		workspace_states[ws].layout = CLAMP(restore_ws_layout[ws], 0, (int)LENGTH(layouts) - 1);
 	}
+	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
+		if (!restore_ws_name_set[ws])
+			continue;
+		Bool changed = False;
+		workspace_name_assign(ws, restore_ws_name[ws], False, &changed);
+		(void)changed;
+	}
+	publish_desktop_names();
 
 	for (int i = 0; i < n_mons && i < MAX_MONITORS; i++) {
 		if (restore_mon_ws[i] >= 0)
@@ -2441,6 +2643,8 @@ void inc_gaps(void)
 
 void init_defaults(void)
 {
+	workspace_names_init_defaults();
+
 	user_config.modkey = MODKEY;
 	user_config.gaps = default_gaps;
 	user_config.border_width = borderpx;
@@ -2485,11 +2689,15 @@ void init_defaults(void)
 	user_config.ipc_enable = ipc_enable ? True : False;
 	user_config.ipc_socket_path = ipc_socket_path;
 
+	int default_layout = layout_index_from_mode(LayoutTile);
+	if (default_layout < 0)
+		default_layout = 0;
+
 	for (int i = 0; i < MAX_MONITORS; i++)
 		user_config.master_width[i] = master_width_default;
 
 	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
-		workspace_states[ws].layout = 0;
+		workspace_states[ws].layout = default_layout;
 		workspace_states[ws].gaps = default_gaps;
 		workspace_states[ws].focused = NULL;
 		for (int mon = 0; mon < MAX_MONITORS; mon++)
@@ -3293,6 +3501,7 @@ void setup(void)
 	}
 	root = XDefaultRootWindow(dpy);
 
+	workspace_names_init_defaults();
 	setup_atoms();
 	setup_randr();
 	other_wm();
@@ -4000,10 +4209,21 @@ void movetows(const Arg *arg)
 
 void setlayoutcmd(const Arg *arg)
 {
-	int target = arg ? arg->i : -1;
-	if (target < 0)
+	int target = -1;
+	if (!arg || arg->i < 0) {
 		target = (workspace_layout_for(current_ws) + 1) % (int)LENGTH(layouts);
-	if (target >= (int)LENGTH(layouts))
+	}
+	else {
+		int requested = arg->i;
+		int by_mode = layout_index_from_mode(requested);
+		if (by_mode >= 0)
+			target = by_mode;
+		else if (requested >= 0 && requested < (int)LENGTH(layouts))
+			target = requested;
+	}
+	if (target < 0 || target >= (int)LENGTH(layouts))
+		target = layout_index_from_mode(LayoutTile);
+	if (target < 0 || target >= (int)LENGTH(layouts))
 		target = 0;
 
 	int mode = layouts[target].mode;

@@ -196,7 +196,8 @@ void drawbar(Monitor *m)
 	XFillRectangle(dpy, d, bar_gc, 0, 0, (unsigned int)m->w, (unsigned int)bh);
 
 	for (int i = 0; i < NUM_WORKSPACES; i++) {
-		int tw = textw(tags[i]) + 14;
+		const char *name = workspace_name_for(i);
+		int tw = textw(name) + 14;
 		Bool selected = (i == view_ws);
 
 		XSetForeground(dpy, bar_gc, selected ? pixel(user_config.bar_sel_bg_col) : pixel(user_config.bar_bg_col));
@@ -204,9 +205,9 @@ void drawbar(Monitor *m)
 		XSetForeground(dpy, bar_gc, selected ? pixel(user_config.bar_sel_fg_col) : pixel(user_config.bar_fg_col));
 		if (bar_xft_font)
 			xft_draw_text(xftdraw, pixel(selected ? user_config.bar_sel_fg_col : user_config.bar_fg_col), x + 7, y,
-				      tags[i], (int)strlen(tags[i]));
+				      name, (int)strlen(name));
 		else
-			XDrawString(dpy, d, bar_gc, x + 7, y, tags[i], (int)strlen(tags[i]));
+			XDrawString(dpy, d, bar_gc, x + 7, y, name, (int)strlen(name));
 		x += tw;
 	}
 

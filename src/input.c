@@ -87,7 +87,7 @@ void hdl_button(XEvent *xev)
 		lw = textw(layouts[workspace_layout_for(bar_ws)].symbol) + 14;
 
 		for (int i = 0; i < NUM_WORKSPACES; i++) {
-			int w = textw(tags[i]) + 14;
+			int w = textw(workspace_name_for(i)) + 14;
 			if (xbutton->x >= x && xbutton->x < x + w) {
 				click = ClkTagBar;
 				arg.ui = (unsigned int)i;

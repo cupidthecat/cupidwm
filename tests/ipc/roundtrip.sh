@@ -225,11 +225,35 @@ ws_out="$(wait_ctl_reply '^ok$' workspace 3 || true)"
 layout_out="$(wait_ctl_reply '^ok$' layout monocle || true)"
 [ -n "$layout_out" ] || fail "layout change command did not succeed"
 
+layout_grid_out="$(wait_ctl_reply '^ok$' layout grid || true)"
+[ -n "$layout_grid_out" ] || fail "grid layout command did not succeed"
+
+verify_grid_out="$(wait_ctl_reply 'workspace id=3 .*layout=grid' query workspaces || true)"
+[ -n "$verify_grid_out" ] || fail "workspace 3 layout was not grid"
+
+layout_columns_out="$(wait_ctl_reply '^ok$' layout columns || true)"
+[ -n "$layout_columns_out" ] || fail "columns layout command did not succeed"
+
+verify_columns_out="$(wait_ctl_reply 'workspace id=3 .*layout=columns' query workspaces || true)"
+[ -n "$verify_columns_out" ] || fail "workspace 3 layout was not columns"
+
+layout_monocle_out="$(wait_ctl_reply '^ok$' layout monocle || true)"
+[ -n "$layout_monocle_out" ] || fail "monocle layout command did not succeed"
+
 verify_ws_out="$(wait_ctl_reply '^ok workspace=3 monitor=' status || true)"
 [ -n "$verify_ws_out" ] || fail "workspace did not switch to 3 before reload"
 
 verify_layout_out="$(wait_ctl_reply 'workspace id=3 .*layout=monocle' query workspaces || true)"
 [ -n "$verify_layout_out" ] || fail "workspace 3 layout was not monocle before reload"
+
+ws_name_set_out="$(wait_ctl_reply '^ok$' workspace-name set 3 coding || true)"
+[ -n "$ws_name_set_out" ] || fail "workspace-name set command did not succeed"
+
+ws_name_get_out="$(wait_ctl_reply '^ok workspace id=3 name=coding$' workspace-name get 3 || true)"
+[ -n "$ws_name_get_out" ] || fail "workspace-name get did not return expected name"
+
+ws_name_query_out="$(wait_ctl_reply 'workspace id=3 .*name=coding' query workspaces || true)"
+[ -n "$ws_name_query_out" ] || fail "workspace query did not include renamed workspace name"
 
 reload_out="$(wait_ctl_reply '^ok$' reload || true)"
 [ -n "$reload_out" ] || fail "cupidwmctl reload did not succeed"
@@ -242,6 +266,9 @@ post_reload_ws_out="$(wait_ctl_reply '^ok workspace=3 monitor=' status || true)"
 
 post_reload_layout_out="$(wait_ctl_reply 'workspace id=3 .*layout=monocle' query workspaces || true)"
 [ -n "$post_reload_layout_out" ] || fail "layout state did not persist across reload"
+
+post_reload_name_out="$(wait_ctl_reply 'workspace id=3 .*name=coding' query workspaces || true)"
+[ -n "$post_reload_name_out" ] || fail "workspace name did not persist across reload"
 
 quit_out="$(wait_ctl_reply '^ok$' quit || true)"
 [ -n "$quit_out" ] || fail "cupidwmctl quit did not succeed"
