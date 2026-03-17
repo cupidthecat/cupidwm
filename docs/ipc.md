@@ -56,6 +56,8 @@ cupidwmctl move down
 cupidwmctl workspace 3
 cupidwmctl move-workspace 5
 cupidwmctl layout monocle
+cupidwmctl layout grid
+cupidwmctl workspace-name set 3 coding
 cupidwmctl query monitors
 cupidwmctl query clients
 cupidwmctl gaps set 12
@@ -105,7 +107,10 @@ Control commands:
 - `workspace N`
 - `move-workspace N`
 - `move-monitor next|prev|left|right|up|down|N`
-- `layout tile|monocle|floating|fibonacci|dwindle`
+- `layout tile|monocle|floating|fibonacci|dwindle|grid|columns`
+- `workspace-name set N <name>`
+- `workspace-name clear N`
+- `workspace-name get [N]`
 - `gaps inc|dec|set N|get`
 - `bar show|hide|toggle|get`
 - `scratchpad toggle N`
@@ -144,6 +149,7 @@ Current event names include:
 - `client_add`
 - `client_remove`
 - `monitor_change`
+- `workspace_name`
 
 ## Restart Recovery
 

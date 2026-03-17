@@ -37,6 +37,16 @@ bash -lc '
 	COMP_CWORD=2
 	_cupidwmctl_complete
 	printf "%s\n" "${COMPREPLY[@]}" | grep -Fx "monocle" >/dev/null
+
+	COMP_WORDS=(cupidwmctl layout g)
+	COMP_CWORD=2
+	_cupidwmctl_complete
+	printf "%s\n" "${COMPREPLY[@]}" | grep -Fx "grid" >/dev/null
+
+	COMP_WORDS=(cupidwmctl workspace-name s)
+	COMP_CWORD=2
+	_cupidwmctl_complete
+	printf "%s\n" "${COMPREPLY[@]}" | grep -Fx "set" >/dev/null
 '
 
 echo "packaging sanity passed"

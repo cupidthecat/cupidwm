@@ -79,6 +79,54 @@ static void arrange_fibonacci(Client *tileable[], int n_tileable, int x, int y, 
 	}
 }
 
+static void arrange_grid(Client *tileable[], int n_tileable, int x, int y, int w, int h, int gaps)
+{
+	if (!tileable || n_tileable <= 0)
+		return;
+
+	int cols = 1;
+	while (cols * cols < n_tileable)
+		cols++;
+	int rows = (n_tileable + cols - 1) / cols;
+
+	int row_h = rows > 0 ? MAX(1, (h - (rows - 1) * gaps) / rows) : h;
+	int idx = 0;
+	int cy = y;
+
+	for (int row = 0; row < rows; row++) {
+		int rem = n_tileable - idx;
+		if (rem <= 0)
+			break;
+		int row_cols = MIN(cols, rem);
+		int col_w = row_cols > 0 ? MAX(1, (w - (row_cols - 1) * gaps) / row_cols) : w;
+		int cx = x;
+		int ch = (row == rows - 1) ? MAX(1, y + h - cy) : row_h;
+
+		for (int col = 0; col < row_cols; col++) {
+			int cw = (col == row_cols - 1) ? MAX(1, x + w - cx) : col_w;
+			apply_client_geom(tileable[idx++], cx, cy, cw, ch);
+			cx += cw + gaps;
+		}
+
+		cy += ch + gaps;
+	}
+}
+
+static void arrange_columns(Client *tileable[], int n_tileable, int x, int y, int w, int h, int gaps)
+{
+	if (!tileable || n_tileable <= 0)
+		return;
+
+	int col_w = n_tileable > 0 ? MAX(1, (w - (n_tileable - 1) * gaps) / n_tileable) : w;
+	int cx = x;
+
+	for (int i = 0; i < n_tileable; i++) {
+		int cw = (i == n_tileable - 1) ? MAX(1, x + w - cx) : col_w;
+		apply_client_geom(tileable[i], cx, y, cw, h);
+		cx += cw + gaps;
+	}
+}
+
 void tile(void)
 {
 	update_struts();
@@ -136,6 +184,14 @@ void tile(void)
 		if (mode == LayoutFibonacci || mode == LayoutDwindle) {
 			arrange_fibonacci(tileable, n_tileable, tile_x, tile_y, tile_width, tile_height,
 			                  mode == LayoutDwindle, gaps);
+			continue;
+		}
+		if (mode == LayoutGrid) {
+			arrange_grid(tileable, n_tileable, tile_x, tile_y, tile_width, tile_height, gaps);
+			continue;
+		}
+		if (mode == LayoutColumns) {
+			arrange_columns(tileable, n_tileable, tile_x, tile_y, tile_width, tile_height, gaps);
 			continue;
 		}
 
@@ -364,9 +420,11 @@ void toggle_monocle(void)
 {
 	int layout = workspace_layout_for(current_ws);
 	if (layouts[layout].mode == LayoutMonocle)
-		workspace_states[current_ws].layout = LayoutTile;
+		workspace_states[current_ws].layout = layout_index_from_mode(LayoutTile);
 	else
-		workspace_states[current_ws].layout = LayoutMonocle;
+		workspace_states[current_ws].layout = layout_index_from_mode(LayoutMonocle);
+	if (workspace_states[current_ws].layout < 0)
+		workspace_states[current_ws].layout = 0;
 	sync_active_monitor_state();
 	tile();
 	update_borders();

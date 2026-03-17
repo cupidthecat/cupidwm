@@ -17,6 +17,7 @@ Appearance and layout options include:
 
 - `borderpx`, `snap`, `showbar`, `topbar`, `barheight`, `fontname`
 - `default_gaps`, `master_width_default`
+- `tags` (default workspace names)
 - color constants (`col_*`)
 
 Behavior options include:
@@ -74,7 +75,7 @@ Notes:
 - `MOD + Ctrl + h/l`: shrink/grow stack client
 - `MOD + Alt + Arrow`: focus monitor by direction
 - `MOD + Alt + Shift + Arrow`: send focused client to monitor by direction
-- `MOD + t/m/f/r/y`: tile/monocle/floating/fibonacci/dwindle
+- `MOD + t/m/f/r/y/g/o`: tile/monocle/floating/fibonacci/dwindle/grid/columns
 - `MOD + Space`: toggle floating (focused)
 - `MOD + Shift + Space`: toggle global floating
 - `MOD + 1..9`: view workspace
@@ -122,6 +123,7 @@ Optional UNIX socket IPC (disabled by default):
 
 Use `cupidwmctl` to send commands when IPC is enabled. See [docs/ipc.md](ipc.md).
 Use `cupidwm --print-ipc-socket` to view the resolved socket path.
+Use `workspace-name set/clear/get` commands for runtime workspace renaming.
 
 ## Session Persistence
 

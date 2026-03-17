@@ -95,11 +95,13 @@ static const Rule rules[] = {
 /* layouts */
 static const Layout layouts[] = {
 	/* symbol, mode */
-	{ "[M]", LayoutMonocle },
 	{ "[]=", LayoutTile },
+	{ "[M]", LayoutMonocle },
 	{ "><>", LayoutFloating },
 	{ "[@]", LayoutFibonacci },
 	{ "[\\]", LayoutDwindle },
+	{ "###", LayoutGrid },
+	{ "|||", LayoutColumns },
 };
 
 #define MODKEY Mod4Mask
@@ -163,6 +165,8 @@ static const Key keys[] = {
 	{ MODKEY,                       XK_f,       setlayoutcmd,            {.i = LayoutFloating} },
 	{ MODKEY,                       XK_r,       setlayoutcmd,            {.i = LayoutFibonacci} },
 	{ MODKEY,                       XK_y,       setlayoutcmd,            {.i = LayoutDwindle} },
+	{ MODKEY,                       XK_g,       setlayoutcmd,            {.i = LayoutGrid} },
+	{ MODKEY,                       XK_o,       setlayoutcmd,            {.i = LayoutColumns} },
 	{ MODKEY,                       XK_space,   togglefloatingcmd,       {0} },
 	{ MODKEY|ShiftMask,             XK_space,   togglefloatingglobalcmd, {0} },
 	{ MODKEY|ShiftMask,             XK_f,       togglefullscreencmd,     {0} },

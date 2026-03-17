@@ -34,6 +34,12 @@ super + alt + shift + {Left,Down,Up,Right}
 super + {t,m,f,r,y}
 	cupidwmctl layout {tile,monocle,floating,fibonacci,dwindle}
 
+super + g
+	cupidwmctl layout grid
+
+super + o
+	cupidwmctl layout columns
+
 super + shift + r
 	cupidwmctl reload
 

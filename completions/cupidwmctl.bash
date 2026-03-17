@@ -6,12 +6,13 @@ _cupidwmctl_complete() {
 	cur="${COMP_WORDS[COMP_CWORD]}"
 	prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-	local top_commands="ping help status query focus swap move workspace move-workspace move-monitor layout gaps bar scratchpad fullscreen floating subscribe reload quit"
+	local top_commands="ping help status query focus swap move workspace move-workspace move-monitor workspace-name layout gaps bar scratchpad fullscreen floating subscribe reload quit"
 	local query_commands="monitors workspaces layouts focused-client clients bar"
 	local focus_commands="next prev left right up down monitor-next monitor-prev monitor-left monitor-right monitor-up monitor-down"
 	local dir_commands="left right up down"
 	local move_monitor_commands="next prev left right up down"
-	local layout_commands="tile monocle floating fibonacci dwindle"
+	local workspace_name_commands="set clear get"
+	local layout_commands="tile monocle floating fibonacci dwindle grid columns"
 	local gaps_commands="inc dec get set"
 	local bar_commands="show hide toggle get status action click"
 	local bar_status_commands="set clear"
@@ -41,6 +42,18 @@ _cupidwmctl_complete() {
 		move-monitor)
 			COMPREPLY=( $(compgen -W "$move_monitor_commands" -- "$cur") )
 			return 0
+			;;
+		workspace-name)
+			if [[ $COMP_CWORD -eq 2 ]]; then
+				COMPREPLY=( $(compgen -W "$workspace_name_commands" -- "$cur") )
+				return 0
+			fi
+			if [[ $COMP_CWORD -eq 3 ]]; then
+				if [[ ${COMP_WORDS[2]} == "set" || ${COMP_WORDS[2]} == "clear" || ${COMP_WORDS[2]} == "get" ]]; then
+					COMPREPLY=( $(compgen -W "1 2 3 4 5 6 7 8 9" -- "$cur") )
+					return 0
+				fi
+			fi
 			;;
 		layout)
 			COMPREPLY=( $(compgen -W "$layout_commands" -- "$cur") )

@@ -518,6 +518,10 @@ static const char *ipc_layout_name(int idx)
 		return "fibonacci";
 	if (layouts[idx].mode == LayoutDwindle)
 		return "dwindle";
+	if (layouts[idx].mode == LayoutGrid)
+		return "grid";
+	if (layouts[idx].mode == LayoutColumns)
+		return "columns";
 	return layouts[idx].symbol ? layouts[idx].symbol : "unknown";
 }
 
@@ -766,26 +770,31 @@ static void ipc_reply_query_workspaces(int client_fd, Bool json)
 			count++;
 
 		Bool visible = workspace_is_visible(ws);
+		const char *name = workspace_name_for(ws);
 		if (!json) {
 			ipc_write_replyf(client_fd,
-			                "workspace id=%d visible=%d clients=%d layout=%s focused=0x%lx\n",
+			                "workspace id=%d visible=%d clients=%d layout=%s focused=0x%lx name=%s\n",
 			                ws + 1,
 			                visible ? 1 : 0,
 			                count,
 			                ipc_layout_name(workspace_layout_for(ws)),
-			                (unsigned long)(workspace_states[ws].focused ? workspace_states[ws].focused->win : None));
+			                (unsigned long)(workspace_states[ws].focused ? workspace_states[ws].focused->win : None),
+			                name ? name : "");
 		}
 		else {
 			char layout_esc[256];
+			char name_esc[256];
 			ipc_json_escape(layout_esc, sizeof(layout_esc), ipc_layout_name(workspace_layout_for(ws)));
+			ipc_json_escape(name_esc, sizeof(name_esc), name ? name : "");
 			ipc_write_replyf(client_fd,
-			                "%s{\"id\":%d,\"visible\":%s,\"clients\":%d,\"layout\":\"%s\",\"focused\":\"0x%lx\"}",
+			                "%s{\"id\":%d,\"visible\":%s,\"clients\":%d,\"layout\":\"%s\",\"focused\":\"0x%lx\",\"name\":\"%s\"}",
 			                ws == 0 ? "" : ",",
 			                ws + 1,
 			                visible ? "true" : "false",
 			                count,
 			                layout_esc,
-			                (unsigned long)(workspace_states[ws].focused ? workspace_states[ws].focused->win : None));
+			                (unsigned long)(workspace_states[ws].focused ? workspace_states[ws].focused->win : None),
+			                name_esc);
 		}
 	}
 
@@ -1076,7 +1085,7 @@ static Bool ipc_parse_layout(const char *name, int *layout_out)
 		return False;
 	for (int i = 0; i < (int)LENGTH(layouts); i++) {
 		if (layouts[i].symbol && strcmp(name, layouts[i].symbol) == 0) {
-			*layout_out = i;
+			*layout_out = layouts[i].mode;
 			return True;
 		}
 	}
@@ -1092,13 +1101,15 @@ static Bool ipc_parse_layout(const char *name, int *layout_out)
 		want_mode = LayoutFibonacci;
 	else if (strcasecmp(name, "dwindle") == 0)
 		want_mode = LayoutDwindle;
+	else if (strcasecmp(name, "grid") == 0)
+		want_mode = LayoutGrid;
+	else if (strcasecmp(name, "columns") == 0 || strcasecmp(name, "column") == 0)
+		want_mode = LayoutColumns;
 
 	if (want_mode >= 0) {
-		for (int i = 0; i < (int)LENGTH(layouts); i++) {
-			if (layouts[i].mode == want_mode) {
-				*layout_out = i;
-				return True;
-			}
+		if (layout_index_from_mode(want_mode) >= 0) {
+			*layout_out = want_mode;
+			return True;
 		}
 	}
 
@@ -1161,14 +1172,15 @@ static Bool ipc_dispatch(int client_fd, char *cmd)
 			                "focus <next|prev|left|right|up|down|monitor-next|monitor-prev|monitor-left|monitor-right|monitor-up|monitor-down>, "
 			                "swap <left|right|up|down>, move <left|right|up|down>, "
 			                "workspace N, move-workspace N, move-monitor <next|prev|N>, "
-			                "layout <tile|monocle|floating|fibonacci|dwindle>, "
+			                "workspace-name <set N name|clear N|get [N]>, "
+			                "layout <tile|monocle|floating|fibonacci|dwindle|grid|columns>, "
 			                "gaps <inc|dec|set N|get>, bar <show|hide|toggle|get|status set|status clear|action set|action clear|click>, "
 			                "scratchpad <toggle|set|remove> N, fullscreen <toggle|on|off>, "
 			                "floating <toggle|on|off|get>, subscribe, reload, quit\n");
 		}
 		else {
 			ipc_write_reply(client_fd,
-			                "{\"ok\":true,\"commands\":[\"ping\",\"help\",\"status\",\"query\",\"focus\",\"swap\",\"move\",\"workspace\",\"move-workspace\",\"move-monitor\",\"layout\",\"gaps\",\"bar\",\"scratchpad\",\"fullscreen\",\"floating\",\"subscribe\",\"reload\",\"quit\"]}\n");
+			                "{\"ok\":true,\"commands\":[\"ping\",\"help\",\"status\",\"query\",\"focus\",\"swap\",\"move\",\"workspace\",\"move-workspace\",\"move-monitor\",\"workspace-name\",\"layout\",\"gaps\",\"bar\",\"scratchpad\",\"fullscreen\",\"floating\",\"subscribe\",\"reload\",\"quit\"]}\n");
 		}
 		return False;
 	}
@@ -1368,6 +1380,104 @@ static Bool ipc_dispatch(int client_fd, char *cmd)
 	}
 	if (strncmp(cmd, "move-workspace ", 15) == 0) {
 		ipc_reply_error(client_fd, json, "workspace out of range");
+		return False;
+	}
+
+	if (strncmp(cmd, "workspace-name ", 15) == 0) {
+		char *rest = cmd + 15;
+		ipc_trim(rest);
+
+		if (strncmp(rest, "set ", 4) == 0) {
+			char *args = rest + 4;
+			ipc_trim(args);
+			char *sp = strchr(args, ' ');
+			if (!sp) {
+				ipc_reply_error(client_fd, json, "workspace index and name required");
+				return False;
+			}
+			*sp = '\0';
+			char *name = sp + 1;
+			ipc_trim(name);
+			if (!name[0]) {
+				ipc_reply_error(client_fd, json, "workspace name cannot be empty");
+				return False;
+			}
+
+			int ws_idx = -1;
+			if (!ipc_parse_index_1based_or_0based(args, NUM_WORKSPACES, &ws_idx)) {
+				ipc_reply_error(client_fd, json, "workspace out of range");
+				return False;
+			}
+			if (!workspace_name_set(ws_idx, name)) {
+				ipc_reply_error(client_fd, json, "invalid workspace name");
+				return False;
+			}
+			ipc_reply_ok(client_fd, json);
+			return False;
+		}
+
+		if (strncmp(rest, "clear ", 6) == 0) {
+			char *idx = rest + 6;
+			ipc_trim(idx);
+			int ws_idx = -1;
+			if (!ipc_parse_index_1based_or_0based(idx, NUM_WORKSPACES, &ws_idx)) {
+				ipc_reply_error(client_fd, json, "workspace out of range");
+				return False;
+			}
+			workspace_name_reset(ws_idx);
+			ipc_reply_ok(client_fd, json);
+			return False;
+		}
+
+		if (strcmp(rest, "get") == 0) {
+			if (!json)
+				ipc_write_reply(client_fd, "ok\n");
+			else
+				ipc_write_reply(client_fd, "{\"ok\":true,\"workspaces\":[");
+
+			for (int i = 0; i < NUM_WORKSPACES; i++) {
+				const char *name = workspace_name_for(i);
+				if (!json) {
+					ipc_write_replyf(client_fd, "workspace id=%d name=%s\n", i + 1, name ? name : "");
+				}
+				else {
+					char name_esc[256];
+					ipc_json_escape(name_esc, sizeof(name_esc), name ? name : "");
+					ipc_write_replyf(client_fd, "%s{\"id\":%d,\"name\":\"%s\"}",
+					                i == 0 ? "" : ",", i + 1, name_esc);
+				}
+			}
+
+			if (json)
+				ipc_write_reply(client_fd, "]}\n");
+			return False;
+		}
+
+		if (strncmp(rest, "get ", 4) == 0) {
+			char *idx = rest + 4;
+			ipc_trim(idx);
+			int ws_idx = -1;
+			if (!ipc_parse_index_1based_or_0based(idx, NUM_WORKSPACES, &ws_idx)) {
+				ipc_reply_error(client_fd, json, "workspace out of range");
+				return False;
+			}
+
+			const char *name = workspace_name_for(ws_idx);
+			if (!json) {
+				ipc_write_replyf(client_fd, "ok workspace id=%d name=%s\n",
+				                ws_idx + 1, name ? name : "");
+			}
+			else {
+				char name_esc[256];
+				ipc_json_escape(name_esc, sizeof(name_esc), name ? name : "");
+				ipc_write_replyf(client_fd,
+				                "{\"ok\":true,\"workspace\":{\"id\":%d,\"name\":\"%s\"}}\n",
+				                ws_idx + 1, name_esc);
+			}
+			return False;
+		}
+
+		ipc_reply_error(client_fd, json, "unknown workspace-name action");
 		return False;
 	}
 

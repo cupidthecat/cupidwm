@@ -98,10 +98,7 @@ void setup_atoms(void)
 	XChangeProperty(dpy, root, atoms[ATOM_NET_NUMBER_OF_DESKTOPS], XA_CARDINAL, 32,
 			        PropModeReplace, (const unsigned char *)&num_workspaces, 1);
 
-	const char workspace_names[] = WORKSPACE_NAMES;
-	int names_len = sizeof(workspace_names);
-	XChangeProperty(dpy, root, atoms[ATOM_NET_DESKTOP_NAMES], atoms[ATOM_UTF8_STRING], 8,
-			        PropModeReplace, (const unsigned char *)workspace_names, names_len);
+	publish_desktop_names();
 
 	XChangeProperty(dpy, root, atoms[ATOM_NET_CURRENT_DESKTOP], XA_CARDINAL, 32,
 			        PropModeReplace, (const unsigned char *)&current_ws, 1);

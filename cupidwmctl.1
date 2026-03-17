@@ -4,6 +4,7 @@ cupidwmctl \- local IPC control client for cupidwm
 .SH SYNOPSIS
 .B cupidwmctl
 .RB [ \-s " path" ]
+.RB [ \-\-json ]
 .RB [ \-\-print\-socket ]
 .RI <command ...>
 .SH DESCRIPTION
@@ -19,6 +20,9 @@ before using this tool.
 .TP
 .B \-s \fIpath\fR
 Use an explicit socket path.
+.TP
+.B \-\-json
+Request JSON-formatted replies.
 .TP
 .B \-\-print\-socket
 Print the resolved socket path and exit.
@@ -74,6 +78,11 @@ Print the server's command summary.
 .B status
 Return workspace, monitor, focused window, and layout state.
 .TP
+.B subscribe
+Keep the socket open and stream events (use
+.B \-\-json
+for JSON event lines).
+.TP
 .B focus next
 Focus the next managed client on the current workspace.
 .TP
@@ -88,13 +97,31 @@ Switch to workspace
 Move the focused client to workspace
 .IR N " (1-9)."
 .TP
+.BI "workspace-name set " N " name"
+Set the displayed name for workspace
+.IR N .
+.TP
+.BI "workspace-name clear " N
+Reset workspace
+.I N
+to its configured default name.
+.TP
+.B workspace-name get
+Show all workspace names.
+.TP
+.BI "workspace-name get " N
+Show the name for workspace
+.IR N .
+.TP
 .BI "layout " name
 Set the current layout. Supported names:
 .BR tile ,
 .BR monocle ,
 .BR floating ,
 .BR fibonacci ,
-.BR dwindle .
+.BR dwindle ,
+.BR grid ,
+.BR columns .
 .TP
 .B reload
 Reload configuration from
@@ -106,8 +133,11 @@ Terminate cupidwm cleanly.
 .nf
 cupidwmctl ping
 cupidwmctl status
+cupidwmctl --json query clients
+cupidwmctl --json subscribe
 cupidwmctl workspace 3
 cupidwmctl layout monocle
+cupidwmctl workspace-name set 3 coding
 CUPIDWM_IPC_SOCKET=/path/to/cupidwm.sock cupidwmctl status
 .fi
 .SH EXIT STATUS
