@@ -1563,7 +1563,6 @@ void change_workspace(int ws)
 		ws_focused[current_ws] = focused;
 
 	in_ws_switch = True;
-	XGrabServer(dpy); /* freeze rendering for tearless switching */
 
 	Bool visible_scratchpads[MAX_SCRATCHPADS] = {False};
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
@@ -1576,7 +1575,7 @@ void change_workspace(int ws)
 	set_monitor_workspace(current_mon, ws);
 	sync_active_monitor_state();
 
-	/* move visible scratchpads to new workspace and map them */
+	/* move visible scratchpads to new workspace - linked list only, no X calls */
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
 		if (visible_scratchpads[i] && scratchpads[i].client) {
 			Client *c = scratchpads[i].client;
@@ -1594,8 +1593,24 @@ void change_workspace(int ws)
 			workspaces[current_ws] = c;
 			c->ws = current_ws;
 			c->mon = current_mon;
+		}
+	}
 
-			/* Update desktop property */
+	/* Pre-position new workspace windows while they are still unmapped.
+	 * tile() only calls XMoveResizeWindow (no map/unmap), so this is
+	 * invisible and sets up correct geometry before they become visible. */
+	tile();
+
+	/* Grab server only for the map/unmap step to prevent tearing.
+	 * The critical section is now as short as possible; all other work
+	 * (focus, EWMH properties, session save) runs after the grab is
+	 * released so other clients are not frozen longer than necessary. */
+	XGrabServer(dpy);
+
+	/* Update EWMH desktop property for moved scratchpads */
+	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
+		if (visible_scratchpads[i] && scratchpads[i].client) {
+			Client *c = scratchpads[i].client;
 			unsigned long desktop = c->sticky ? 0xFFFFFFFFUL : (unsigned long)current_ws;
 			XChangeProperty(dpy, c->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
 			                PropModeReplace, (unsigned char *)&desktop, 1);
@@ -1603,7 +1618,9 @@ void change_workspace(int ws)
 	}
 
 	refresh_client_visibility();
-	tile();
+
+	XUngrabServer(dpy);
+	XSync(dpy, False);
 
 	/* restore last focused client for this workspace */
 	focused = ws_focused[current_ws];
@@ -1619,7 +1636,7 @@ void change_workspace(int ws)
 			focused = NULL;
 	}
 
-	/* try focus focus scratchpad if no other window available */
+	/* try focus scratchpad if no other window available */
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
 		if (!focused && visible_scratchpads[i] && scratchpads[i].client) {
 			focused = scratchpads[i].client;
@@ -1627,15 +1644,17 @@ void change_workspace(int ws)
 		}
 	}
 
-	set_input_focus(focused, False, True);
+	/* Focus without warping inside the grab; warp separately now that the
+	 * grab is released so warp_cursor does not block all clients. */
+	set_input_focus(focused, False, False);
+	if (focused && user_config.warp_cursor)
+		warp_cursor(focused);
 
 	previous_workspace = old_ws;
 	publish_current_desktop();
 	update_client_desktop_properties();
 	session_state_save();
 
-	XUngrabServer(dpy);
-	XSync(dpy, False);
 	in_ws_switch = False;
 	{
 		char details[96];
@@ -1646,10 +1665,15 @@ void change_workspace(int ws)
 
 int check_parent(pid_t p, pid_t c)
 {
-	while (p != c && c != 0) /* walk proc tree until parent found */
+	/* Cap the ancestry walk to avoid O(depth) /proc reads in the event loop.
+	 * Real process trees are shallow; anything beyond 16 hops is not a match. */
+	int depth = 0;
+	while (p != c && c != 0 && depth < 16) {
 		c = get_parent_process(c);
+		depth++;
+	}
 
-	return (int)c;
+	return (p == c) ? (int)c : 0;
 }
 
 int clean_mask(int mask)
@@ -4128,8 +4152,8 @@ void warp_cursor(Client *c)
 	int center_x = c->x + (c->w / 2);
 	int center_y = c->y + (c->h / 2);
 
+	/* XWarpPointer is asynchronous; XFlush in set_input_focus is sufficient. */
 	XWarpPointer(dpy, None, root, 0, 0, 0, 0, center_x, center_y);
-	XSync(dpy, False);
 }
 
 
