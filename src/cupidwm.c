@@ -95,6 +95,7 @@ void hdl_config_req(XEvent *xev);
 void hdl_dummy(XEvent *xev);
 void hdl_destroy_ntf(XEvent *xev);
 void hdl_enter_ntf(XEvent *xev);
+void hdl_focus_in(XEvent *xev);
 void hdl_keypress(XEvent *xev);
 void hdl_mapping_ntf(XEvent *xev);
 void hdl_map_req(XEvent *xev);
@@ -1510,6 +1511,20 @@ void apply_fullscreen(Client *c, Bool on)
 		c->y = wy;
 		c->w = ww;
 		c->h = wh;
+		XConfigureEvent notify = {
+			.type = ConfigureNotify,
+			.display = dpy,
+			.event = c->win,
+			.window = c->win,
+			.x = c->x,
+			.y = c->y,
+			.width = c->w,
+			.height = c->h,
+			.border_width = 0,
+			.above = None,
+			.override_redirect = False,
+		};
+		XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&notify);
 
 		XRaiseWindow(dpy, c->win);
 		update_net_client_list();
@@ -1527,6 +1542,20 @@ void apply_fullscreen(Client *c, Bool on)
 		c->y = c->orig_y;
 		c->w = c->orig_w;
 		c->h = c->orig_h;
+		XConfigureEvent notify = {
+			.type = ConfigureNotify,
+			.display = dpy,
+			.event = c->win,
+			.window = c->win,
+			.x = c->x,
+			.y = c->y,
+			.width = c->w,
+			.height = c->h,
+			.border_width = user_config.border_width,
+			.above = None,
+			.override_redirect = False,
+		};
+		XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&notify);
 
 		if (!c->floating)
 			c->mon = get_monitor_for(c);
@@ -3571,6 +3600,7 @@ void setup(void)
 	evtable[ConfigureRequest] = hdl_config_req;
 	evtable[DestroyNotify] = hdl_destroy_ntf;
 	evtable[EnterNotify] = hdl_enter_ntf;
+	evtable[FocusIn] = hdl_focus_in;
 	evtable[Expose] = hdl_expose;
 	evtable[KeyPress] = hdl_keypress;
 	evtable[MappingNotify] = hdl_mapping_ntf;
@@ -3605,6 +3635,7 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 			}
 
 		Window w = find_toplevel(c->win);
+		Bool focus_changed = (prev_focused != w || current_ws != prev_ws || current_mon != prev_mon);
 
 		XSetInputFocus(dpy, w, RevertToPointerRoot, CurrentTime);
 		send_wm_take_focus(w);
@@ -3625,32 +3656,38 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 				if (layouts[current_layout].mode == LayoutMonocle || monocle || c->floating || !user_config.floating_on_top)
 					XRaiseWindow(dpy, w);
 			}
+			if (focus_changed) {
 				publish_current_desktop();
 				/* EWMH focus hint */
 				XChangeProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW], XA_WINDOW, 32,
 						PropModeReplace, (unsigned char *)&w, 1);
+			}
 			update_focused_ewmh_state(c);
-			update_net_client_list();
+			if (focus_changed || raise_win)
+				update_net_client_list();
 
-			update_borders();
+			if (focus_changed)
+				update_borders();
 
 		if (warp && user_config.warp_cursor)
 			warp_cursor(c);
 	}
-		else {
-			/* no client */
-			XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
-				XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
+	else {
+		/* no client */
+		Bool focus_changed = (prev_focused != None || current_ws != prev_ws || current_mon != prev_mon);
+		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+		if (focus_changed)
+			XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
 
-				focused = NULL;
-				ws_focused[current_ws] = NULL;
-				workspace_states[current_ws].focused = NULL;
-				update_focused_ewmh_state(NULL);
-				update_net_client_list();
-				update_borders();
-			}
-
-	XFlush(dpy);
+		focused = NULL;
+		ws_focused[current_ws] = NULL;
+		workspace_states[current_ws].focused = NULL;
+		update_focused_ewmh_state(NULL);
+		if (focus_changed)
+			update_net_client_list();
+		if (focus_changed)
+			update_borders();
+	}
 
 	Window now_focused = focused ? focused->win : None;
 	if (now_focused != prev_focused || current_ws != prev_ws || current_mon != prev_mon) {

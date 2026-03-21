@@ -867,6 +867,22 @@ void hdl_config_req(XEvent *xev)
 		XConfigureWindow(dpy, config_ev->window, config_ev->value_mask, &wc);
 		return;
 	}
+
+	/* tiled managed client: deny geometry change but acknowledge per ICCCM */
+	XConfigureEvent notify = {
+		.type = ConfigureNotify,
+		.display = dpy,
+		.event = c->win,
+		.window = c->win,
+		.x = c->x,
+		.y = c->y,
+		.width = c->w,
+		.height = c->h,
+		.border_width = user_config.border_width,
+		.above = None,
+		.override_redirect = False,
+	};
+	XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&notify);
 }
 
 void hdl_dummy(XEvent *xev)
@@ -904,6 +920,25 @@ void hdl_enter_ntf(XEvent *xev)
 	}
 
 	set_input_focus(c, True, False);
+}
+
+void hdl_focus_in(XEvent *xev)
+{
+	XFocusChangeEvent *focus_ev = &xev->xfocus;
+	Window focused_top;
+	Window event_top;
+
+	if (!focused)
+		return;
+
+	focused_top = find_toplevel(focused->win);
+	event_top = find_toplevel(focus_ev->window);
+
+	if (!event_top || event_top == root)
+		return;
+
+	if (event_top != focused_top)
+		set_input_focus(focused, False, False);
 }
 
 void hdl_destroy_ntf(XEvent *xev)
@@ -1254,6 +1289,8 @@ void hdl_map_req(XEvent *xev)
 	}
 	set_frame_extents(w);
 	set_allowed_actions(w);
+	if (!c->hidden && (c->no_focus_on_map || !user_config.new_win_focus))
+		send_wm_take_focus(c->win);
 
 	if (user_config.new_win_focus && !c->hidden && !c->no_focus_on_map) {
 		focused = c;
@@ -1263,7 +1300,7 @@ void hdl_map_req(XEvent *xev)
 	if (c->no_focus_on_map) {
 		c->suppress_enter_focus_once = True;
 		c->suppress_focus_until_sec = (long)time(NULL) + 2;
-}
+	}
 	update_borders();
 }
 
