@@ -242,8 +242,14 @@ void hdl_button(XEvent *xev)
 			drag_orig_w = c->w;
 			drag_orig_h = c->h;
 			drag_mode = DRAG_SWAP;
-			XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
+			int grab = XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
 				     GrabModeAsync, GrabModeAsync, None, cursor_move, CurrentTime);
+			if (grab != GrabSuccess) {
+				drag_mode = DRAG_NONE;
+				drag_client = NULL;
+				swap_target = NULL;
+				return;
+			}
 			focused = c;
 			set_input_focus(focused, False, False);
 			XSetWindowBorder(dpy, c->win, user_config.border_swap_col);
@@ -275,8 +281,10 @@ void hdl_button(XEvent *xev)
 			return;
 
 		Cursor cursor = (xbutton->button == left_click) ? cursor_move : cursor_resize;
-		XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
-				     GrabModeAsync, GrabModeAsync, None, cursor, CurrentTime);
+		int grab = XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
+			     GrabModeAsync, GrabModeAsync, None, cursor, CurrentTime);
+		if (grab != GrabSuccess)
+			return;
 
 		drag_client = c;
 		drag_start_x = xbutton->x_root;
@@ -301,6 +309,9 @@ void hdl_button_release(XEvent *xev)
 {
 	(void)xev;
 
+	if (drag_mode == DRAG_NONE)
+		return;
+
 	if (drag_mode == DRAG_SWAP) {
 		if (swap_target) {
 			XSetWindowBorder(dpy, swap_target->win, (swap_target == focused ?
@@ -313,6 +324,17 @@ void hdl_button_release(XEvent *xev)
 
 	XUngrabPointer(dpy, CurrentTime);
 
+	drag_mode = DRAG_NONE;
+	drag_client = NULL;
+	swap_target = NULL;
+}
+
+static void cancel_drag(void)
+{
+	if (drag_mode == DRAG_NONE)
+		return;
+
+	XUngrabPointer(dpy, CurrentTime);
 	drag_mode = DRAG_NONE;
 	drag_client = NULL;
 	swap_target = NULL;
@@ -928,7 +950,12 @@ void hdl_focus_in(XEvent *xev)
 	Window focused_top;
 	Window event_top;
 
-	if (!focused)
+	if (!focused || !client_is_visible(focused)) {
+		set_input_focus(NULL, False, False);
+		return;
+	}
+
+	if (focus_ev->mode == NotifyGrab || focus_ev->mode == NotifyUngrab)
 		return;
 
 	focused_top = find_toplevel(focused->win);
@@ -956,6 +983,9 @@ void hdl_destroy_ntf(XEvent *xev)
 
 		if (!c)
 			continue;
+
+		if (c == drag_client || c == swap_target)
+			cancel_drag();
 
 		/* if client is swallowed, restore swallower */
 		if (c->swallower)
@@ -1342,6 +1372,16 @@ void hdl_motion(XEvent *xev)
 		return;
 	}
 
+	if (!drag_client || !drag_client->mapped || !client_is_visible(drag_client)) {
+		cancel_drag();
+		return;
+	}
+
+	if ((motion_ev->state & (Button1Mask | Button2Mask | Button3Mask)) == 0) {
+		cancel_drag();
+		return;
+	}
+
 	if (user_config.motion_throttle > 0) {
 		Time min_interval = (Time)(1000 / (unsigned int)user_config.motion_throttle);
 		if (motion_ev->time - last_motion_time <= min_interval)
@@ -1564,6 +1604,9 @@ void hdl_unmap_ntf(XEvent *xev)
 	}
 
 	if (unmapped) {
+		if (unmapped == drag_client || unmapped == swap_target)
+			cancel_drag();
+
 		Client *replacement = first_visible_client(unmapped_ws, unmapped->mon, unmapped);
 
 		if (ws_focused[unmapped_ws] == unmapped)

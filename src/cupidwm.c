@@ -4323,8 +4323,10 @@ void movemousecmd(const Arg *arg)
 	drag_orig_w = focused->w;
 	drag_orig_h = focused->h;
 	drag_mode = DRAG_MOVE;
-	XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
+	int grab = XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
 	             GrabModeAsync, GrabModeAsync, None, cursor_move, CurrentTime);
+	if (grab != GrabSuccess)
+		cancel_drag();
 }
 
 void resizemousecmd(const Arg *arg)
@@ -4344,8 +4346,10 @@ void resizemousecmd(const Arg *arg)
 	drag_orig_w = focused->w;
 	drag_orig_h = focused->h;
 	drag_mode = DRAG_RESIZE;
-	XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
+	int grab = XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
 	             GrabModeAsync, GrabModeAsync, None, cursor_resize, CurrentTime);
+	if (grab != GrabSuccess)
+		cancel_drag();
 }
 
 void swapmousecmd(const Arg *arg)
@@ -4362,8 +4366,10 @@ void swapmousecmd(const Arg *arg)
 	drag_orig_w = focused->w;
 	drag_orig_h = focused->h;
 	drag_mode = DRAG_SWAP;
-	XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
+	int grab = XGrabPointer(dpy, root, True, ButtonReleaseMask | PointerMotionMask,
 	             GrabModeAsync, GrabModeAsync, None, cursor_move, CurrentTime);
+	if (grab != GrabSuccess)
+		cancel_drag();
 }
 
 void restartwm(const Arg *arg)
