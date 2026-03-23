@@ -1,4 +1,4 @@
-// layout module
+/* Layout engines and geometry application for tiled/floating arrangements. */
 
 static void apply_client_geom(Client *c, int x, int y, int w, int h)
 {

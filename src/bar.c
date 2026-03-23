@@ -1,4 +1,4 @@
-// bar module
+/* Bar rendering and clickable tab/title interactions. */
 
 int collect_bar_clients(int mon, Client **list, int max_clients)
 {

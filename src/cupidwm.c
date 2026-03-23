@@ -3,6 +3,7 @@
  * cupidwm is a compact X11 window manager with source-based configuration.
  * It provides workspace-driven tiling, floating, monocle, scratchpads,
  * swallowing and custom layouts.
+ * This file contains process startup, event loop, and WM-wide orchestration.
  */
 
 #include <signal.h>

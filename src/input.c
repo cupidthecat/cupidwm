@@ -1,4 +1,4 @@
-// input module
+/* Input handling: key/mouse events, bindings, focus/move/resize interactions. */
 
 static int monitor_at_point(int x_root, int y_root)
 {

@@ -1,4 +1,5 @@
 /* See LICENSE for more information on use */
+/* Shared constants, enums, structs, and globals across cupidwm modules. */
 #pragma once
 
 #include <X11/Xlib.h>

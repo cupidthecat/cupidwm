@@ -1,4 +1,4 @@
-// ewmh module
+/* EWMH helpers for publishing root/window properties expected by panels/tools. */
 
 static int client_map_seq_cmp(const void *lhs, const void *rhs)
 {
@@ -68,18 +68,19 @@ Bool window_is_dock(Window w)
 
 void setup_atoms(void)
 {
+	/* Intern all atoms once at startup so later code can use compact enum indexing. */
 	for (int i = 0; i < ATOM_COUNT; i++)
 		atoms[i] = XInternAtom(dpy, atom_names[i], False);
 
-	/* checking window */
+	/* EWMH compliance check window advertised through _NET_SUPPORTING_WM_CHECK. */
 	wm_check_win = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
 	/* root property -> child window */
 	XChangeProperty(dpy, root, atoms[ATOM_NET_SUPPORTING_WM_CHECK], XA_WINDOW, 32,
 			        PropModeReplace, (unsigned char *)&wm_check_win, 1);
-	/* child window -> child window */
+	/* child window -> itself */
 	XChangeProperty(dpy, wm_check_win, atoms[ATOM_NET_SUPPORTING_WM_CHECK], XA_WINDOW, 32,
 			        PropModeReplace, (unsigned char *)&wm_check_win, 1);
-	/* name the wm */
+	/* Publish WM name in both UTF8 and legacy WM_NAME properties. */
 	char wmname[] = "cupidwm";
 	XChangeProperty(dpy, wm_check_win, atoms[ATOM_NET_WM_NAME], atoms[ATOM_UTF8_STRING], 8,
 			        PropModeReplace, (unsigned char *)wmname, strlen(wmname));
@@ -93,7 +94,7 @@ void setup_atoms(void)
 	XChangeProperty(dpy, root, atoms[ATOM_NET_WM_NAME], atoms[ATOM_UTF8_STRING], 8,
 		        PropModeReplace, (unsigned char *)wmname, strlen(wmname));
 
-	/* workspace setup */
+	/* Workspace metadata consumed by pagers/taskbars. */
 	long num_workspaces = NUM_WORKSPACES;
 	XChangeProperty(dpy, root, atoms[ATOM_NET_NUMBER_OF_DESKTOPS], XA_CARDINAL, 32,
 			        PropModeReplace, (const unsigned char *)&num_workspaces, 1);
@@ -103,7 +104,7 @@ void setup_atoms(void)
 	XChangeProperty(dpy, root, atoms[ATOM_NET_CURRENT_DESKTOP], XA_CARDINAL, 32,
 			        PropModeReplace, (const unsigned char *)&current_ws, 1);
 
-	/* load supported list */
+	/* Advertise the atom set this WM understands. */
 	XChangeProperty(dpy, root, atoms[ATOM_NET_SUPPORTED], XA_ATOM, 32,
 			        PropModeReplace, (const unsigned char *)atoms, ATOM_COUNT);
 
@@ -143,6 +144,7 @@ void set_allowed_actions(Window w)
 
 void update_focused_ewmh_state(Client *active)
 {
+	/* Keep _NET_WM_STATE_FOCUSED synchronized for all managed windows. */
 	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
 		for (Client *c = workspaces[ws]; c; c = c->next)
 			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_FOCUSED], c == active);
@@ -151,6 +153,7 @@ void update_focused_ewmh_state(Client *active)
 
 void update_client_desktop_properties(void)
 {
+	/* Sticky clients are exported as 0xFFFFFFFF per EWMH spec. */
 	for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
 		for (Client *c = workspaces[ws]; c; c = c->next) {
 			unsigned long desktop = c->sticky ? 0xFFFFFFFFUL : (unsigned long)ws;
@@ -172,6 +175,7 @@ void update_net_client_list(void)
 	if (n_clients > 1)
 		qsort(clients, (size_t)n_clients, sizeof(clients[0]), client_map_seq_cmp);
 
+	/* _NET_CLIENT_LIST is published in map order (oldest mapped first). */
 	for (int i = 0; i < n_clients; i++)
 		map_list[i] = clients[i]->win;
 
@@ -179,6 +183,11 @@ void update_net_client_list(void)
 	Window parent_ret = None;
 	Window *children = NULL;
 	unsigned int n_children = 0;
+	/*
+	 * _NET_CLIENT_LIST_STACKING should reflect bottom-to-top stacking order.
+	 * We seed the list from XQueryTree (root children) then append any managed
+	 * windows missing from the tree snapshot to keep the property complete.
+	 */
 	if (XQueryTree(dpy, root, &root_ret, &parent_ret, &children, &n_children)) {
 		for (unsigned int i = 0; i < n_children && n_stacking < n_clients; i++) {
 			Client *c = find_client(children[i]);
@@ -233,6 +242,7 @@ static void apply_window_strut(Window w, int screen_w, int screen_h, Bool *any_s
 	if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_STRUT_PARTIAL], 0, 12, False, XA_CARDINAL,
 		       &actual, &sfmt, &len, &rem,
 		       (unsigned char **)&str) == Success && str) {
+		/* Prefer _NET_WM_STRUT_PARTIAL because it carries side-specific spans. */
 		if (actual == XA_CARDINAL && sfmt == 32 && len >= 12) {
 			left = str[0];
 			right = str[1];
@@ -253,6 +263,7 @@ static void apply_window_strut(Window w, int screen_w, int screen_h, Bool *any_s
 
 	if (!have_strut) {
 		str = NULL;
+		/* Fallback to legacy _NET_WM_STRUT when PARTIAL is unavailable. */
 		if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_STRUT], 0, 4, False, XA_CARDINAL,
 		       &actual, &sfmt, &len, &rem,
 		       (unsigned char **)&str) == Success && str) {
@@ -267,7 +278,7 @@ static void apply_window_strut(Window w, int screen_w, int screen_h, Bool *any_s
 		}
 	}
 
-	/* skip empty struts */
+	/* Ignore windows that do not actually reserve screen edges. */
 	if (!have_strut || (!left && !right && !top && !bottom))
 		return;
 
@@ -280,7 +291,7 @@ static void apply_window_strut(Window w, int screen_w, int screen_h, Bool *any_s
 		int mw = mons[m].w;
 		int mh = mons[m].h;
 
-		/* strip monitors whose vertical span does not intersect */
+		/* Left/right struts only affect monitors whose Y spans overlap the claim. */
 		if (left > 0) {
 			long span_start = left_start_y;
 			long span_end = left_end_y;
@@ -329,7 +340,7 @@ static void apply_window_strut(Window w, int screen_w, int screen_h, Bool *any_s
 
 void update_struts(void)
 {
-	/* reset all reserves */
+	/* Recompute monitor reservations from scratch each time. */
 	for (int i = 0; i < n_mons; i++) {
 		mons[i].reserve_left   = 0;
 		mons[i].reserve_right  = 0;
@@ -355,6 +366,7 @@ void update_struts(void)
 		XFree(children);
 
 	if (!any_strut) {
+		/* Some docks are reparented/unusual; fallback to managed clients scan. */
 		for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
 			for (Client *c = workspaces[ws]; c; c = c->next)
 				apply_window_strut(c->win, screen_w, screen_h, &any_strut);
@@ -362,6 +374,7 @@ void update_struts(void)
 	}
 
 	if (user_config.showbar) {
+		/* Reserve cupidwm's own bar on each monitor in addition to external struts. */
 		for (int i = 0; i < n_mons; i++) {
 			if (user_config.topbar)
 				mons[i].reserve_top += user_config.bar_height;
@@ -378,6 +391,7 @@ void update_workarea(void)
 	long workarea[4 * MAX_MONITORS];
 	int workarea_mons = MIN(n_mons, MAX_MONITORS);
 
+	/* Export one (x, y, w, h) tuple per monitor after all reservations. */
 	for (int i = 0; i < workarea_mons; i++) {
 		workarea[i * 4 + 0] = mons[i].x + mons[i].reserve_left;
 		workarea[i * 4 + 1] = mons[i].y + mons[i].reserve_top;
@@ -430,6 +444,7 @@ void window_set_ewmh_state(Window w, Atom state, Bool add)
 		n_atoms = 0;
 	}
 
+	/* Rebuild property list without duplicates, optionally re-adding target state. */
 	unsigned long capacity = n_atoms + (add ? 1UL : 0UL);
 	Atom *list = NULL;
 	unsigned long list_len = 0;

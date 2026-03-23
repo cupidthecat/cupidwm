@@ -1,4 +1,4 @@
-// local unix socket 
+/* Local UNIX-socket IPC server used by cupidwmctl and event subscribers. */
 
 #define IPC_SOCKET_ROOT_PROPERTY "_CUPIDWM_IPC_SOCKET"
 

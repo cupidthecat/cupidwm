@@ -1,4 +1,4 @@
-// status module
+/* Status text rendering and bar/statusline drawing helpers. */
 
 static unsigned long pixel(long col)
 {
