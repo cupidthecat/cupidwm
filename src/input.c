@@ -1513,8 +1513,7 @@ void hdl_property_ntf(XEvent *xev)
 
 	if ((property_ev->atom == atoms[ATOM_NET_WM_STRUT] ||
 	     property_ev->atom == atoms[ATOM_NET_WM_STRUT_PARTIAL]) &&
-	    property_ev->window != root &&
-	    window_is_dock(property_ev->window)) {
+	    property_ev->window != root) {
 		update_struts();
 		tile();
 		update_borders();

@@ -232,9 +232,6 @@ void update_struts(void)
 		if (!XGetWindowAttributes(dpy, w, &wa) || wa.map_state != IsViewable)
 			continue;
 
-		if (!window_is_dock(w))
-			continue;
-
 		long left = 0;
 		long right = 0;
 		long top = 0;
