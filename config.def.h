@@ -1,4 +1,5 @@
 /* See LICENSE for copyright and license details. */
+/* Default compile-time configuration values for cupidwm. */
 
 /* appearance */
 static const unsigned int borderpx = 3;
