@@ -1,4 +1,4 @@
-/* Optional local UNIX socket IPC server for cupidwmctl. */
+// local unix socket 
 
 #define IPC_SOCKET_ROOT_PROPERTY "_CUPIDWM_IPC_SOCKET"
 

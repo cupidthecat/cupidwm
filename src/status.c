@@ -1,4 +1,4 @@
-/* Extracted from cupidwm.c: status-related rendering and metrics. */
+// status module
 
 static unsigned long pixel(long col)
 {

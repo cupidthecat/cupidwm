@@ -1,12 +1,19 @@
-/* Extracted from cupidwm.c: layout and tiling transitions. */
+// layout module
 
 static void apply_client_geom(Client *c, int x, int y, int w, int h)
 {
+	int nx = x;
+	int ny = y;
+	int iw = MAX(1, w - (2 * user_config.border_width));
+	int ih = MAX(1, h - (2 * user_config.border_width));
+
+	apply_size_hints(c, &nx, &ny, &iw, &ih, False);
+
 	XWindowChanges wc = {
-		.x = x,
-		.y = y,
-		.width = MAX(1, w - (2 * user_config.border_width)),
-		.height = MAX(1, h - (2 * user_config.border_width)),
+		.x = nx,
+		.y = ny,
+		.width = iw,
+		.height = ih,
 		.border_width = user_config.border_width
 	};
 
@@ -159,20 +166,7 @@ void tile(void)
 		if (mode == LayoutMonocle) {
 			for (int i = 0; i < n_tileable; i++) {
 				Client *c = tileable[i];
-				XWindowChanges wc = {
-					.x = tile_x,
-					.y = tile_y,
-					.width = MAX(1, tile_width - 2 * user_config.border_width),
-					.height = MAX(1, tile_height - 2 * user_config.border_width),
-					.border_width = user_config.border_width
-				};
-
-				XConfigureWindow(dpy, c->win,
-				                 CWX | CWY | CWWidth | CWHeight | CWBorderWidth, &wc);
-				c->x = wc.x;
-				c->y = wc.y;
-				c->w = wc.width;
-				c->h = wc.height;
+				apply_client_geom(c, tile_x, tile_y, tile_width, tile_height);
 			}
 
 			if (focused && client_is_visible(focused) && focused->mon == m &&
@@ -197,43 +191,34 @@ void tile(void)
 
 		float *master_width_slot = workspace_master_width_for(ws, m);
 		float master_frac = CLAMP(master_width_slot ? *master_width_slot : master_width_default, MF_MIN, MF_MAX);
-		int master_width = (n_tileable > 1) ? (int)(tile_width * master_frac) : tile_width;
-		int stack_width = (n_tileable > 1) ? (tile_width - master_width - gaps) : 0;
-
-		{
-			Client *c = tileable[0];
-			int border_width = 2 * user_config.border_width;
-			XWindowChanges wc = {
-				.x = tile_x,
-				.y = tile_y,
-				.width = MAX(1, master_width - border_width),
-				.height = MAX(1, tile_height - border_width),
-				.border_width = user_config.border_width
-			};
-
-			Bool geom_differ =
-				c->x != wc.x || c->y != wc.y ||
-				c->w != wc.width || c->h != wc.height;
-			if (geom_differ)
-				XConfigureWindow(dpy, c->win, CWX | CWY | CWWidth | CWHeight | CWBorderWidth, &wc);
-
-			c->x = wc.x;
-			c->y = wc.y;
-			c->w = wc.width;
-			c->h = wc.height;
-		}
-
-		if (n_tileable == 1)
-			continue;
+		int nmaster = MIN(workspace_nmaster_for(ws), n_tileable);
+		Bool has_stack = n_tileable > nmaster;
+		int master_width = has_stack ? (int)(tile_width * master_frac) : tile_width;
+		int stack_width = has_stack ? (tile_width - master_width - gaps) : 0;
 
 		int border_width = 2 * user_config.border_width;
-		int n_stack = n_tileable - 1;
+		int master_y = tile_y;
+		for (int i = 0; i < nmaster; i++) {
+			int masters_left = nmaster - i;
+			int remaining_master_h = tile_y + tile_height - master_y;
+			int mh = MAX(1, (remaining_master_h - (masters_left - 1) * gaps) / masters_left);
+			Client *c = tileable[i];
+			apply_client_geom(c, tile_x, master_y, master_width, mh);
+
+			master_y += mh + gaps;
+		}
+
+		if (!has_stack)
+			continue;
+
+		int stack_start = nmaster;
+		int n_stack = n_tileable - stack_start;
 		int min_stack_height = border_width + 1;
 		int total_fixed_heights = 0;
 		int n_auto = 0; /* automatically take up leftover space */
 		int heights_final[MAX_CLIENTS] = {0};
 
-		for (int i = 1 ; i < n_tileable; i++) { /* i=1 - we are excluding master */
+		for (int i = stack_start; i < n_tileable; i++) {
 			if (tileable[i]->custom_stack_height > 0)
 				total_fixed_heights += tileable[i]->custom_stack_height;
 			else
@@ -248,7 +233,7 @@ void tile(void)
 			int count = 0;
 			int auto_height = remaining / n_auto;
 
-			for (int i = 1; i < n_tileable; i++) {
+			for (int i = stack_start; i < n_tileable; i++) {
 				if (tileable[i]->custom_stack_height > 0) {
 					heights_final[i] = tileable[i]->custom_stack_height;
 				}
@@ -260,7 +245,7 @@ void tile(void)
 			}
 		}
 		else {
-			for (int i = 1; i < n_tileable; i++) {
+			for (int i = stack_start; i < n_tileable; i++) {
 				if (tileable[i]->custom_stack_height > 0)
 					heights_final[i] = tileable[i]->custom_stack_height;
 				else
@@ -269,13 +254,13 @@ void tile(void)
 		}
 
 		int total_height = total_vgaps;
-		for (int i = 1; i < n_tileable; i++)
+		for (int i = stack_start; i < n_tileable; i++)
 			total_height += heights_final[i];
 
 		int overfill = total_height - tile_height;
 		if (overfill > 0) {
 			/* shrink from top down, excluding bottom */
-			for (int i = 1; i < n_tileable - 1 && overfill > 0; i++) {
+			for (int i = stack_start; i < n_tileable - 1 && overfill > 0; i++) {
 				int shrink = MIN(overfill, heights_final[i] - min_stack_height);
 				heights_final[i] -= shrink;
 				overfill -= shrink;
@@ -284,7 +269,7 @@ void tile(void)
 
 		/* if its not perfectly filled stretch bottom to absorb remainder */
 		int actual_height = total_vgaps;
-		for (int i = 1; i < n_tileable; i++)
+		for (int i = stack_start; i < n_tileable; i++)
 			actual_height += heights_final[i];
 
 		int shortfall = tile_height - actual_height;
@@ -292,30 +277,17 @@ void tile(void)
 			heights_final[n_tileable - 1] += shortfall;
 
 		int stack_y = tile_y;
-		for (int i = 1; i < n_tileable; i++) {
+		for (int i = stack_start; i < n_tileable; i++) {
 			Client *c = tileable[i];
-			XWindowChanges wc = {
-				.x = tile_x + master_width + gaps,
-				.y = stack_y,
-				.width = MAX(1, stack_width - (2 * user_config.border_width)),
-				.height = MAX(1, heights_final[i] - (2 * user_config.border_width)),
-				.border_width = user_config.border_width
-			};
-
-			Bool geom_differ =
-				c->x != wc.x || c->y != wc.y ||
-				c->w != wc.width || c->h != wc.height;
-			if (geom_differ)
-				XConfigureWindow(dpy, c->win, CWX | CWY | CWWidth | CWHeight | CWBorderWidth, &wc);
-
-			c->x = wc.x;
-			c->y = wc.y;
-			c->w = wc.width;
-			c->h = wc.height;
+			apply_client_geom(c, tile_x + master_width + gaps, stack_y,
+			                  stack_width, heights_final[i]);
 
 			stack_y += heights_final[i] + gaps;
 		}
 	}
+
+	for (int m = 0; m < n_mons; m++)
+		restack_monitor(m);
 
 	update_borders();
 }
@@ -336,10 +308,15 @@ void toggle_floating(void)
 	if (focused->floating) {
 		XWindowAttributes wa;
 		if (XGetWindowAttributes(dpy, focused->win, &wa)) {
-			focused->x = wa.x;
-			focused->y = wa.y;
-			focused->w = wa.width;
-			focused->h = wa.height;
+			int nx = wa.x;
+			int ny = wa.y;
+			int nw = wa.width;
+			int nh = wa.height;
+			apply_size_hints(focused, &nx, &ny, &nw, &nh, True);
+			focused->x = nx;
+			focused->y = ny;
+			focused->w = nw;
+			focused->h = nh;
 
 			XWindowChanges wc = {
 				.x = focused->x,
@@ -380,10 +357,15 @@ void toggle_floating_global(void)
 			if (!c->fullscreen) {
 				XWindowAttributes wa;
 				if (XGetWindowAttributes(dpy, c->win, &wa)) {
-					c->x = wa.x;
-					c->y = wa.y;
-					c->w = wa.width;
-					c->h = wa.height;
+					int nx = wa.x;
+					int ny = wa.y;
+					int nw = wa.width;
+					int nh = wa.height;
+					apply_size_hints(c, &nx, &ny, &nw, &nh, True);
+					c->x = nx;
+					c->y = ny;
+					c->w = nw;
+					c->h = nh;
 
 					XWindowChanges wc = {
 						.x = c->x,

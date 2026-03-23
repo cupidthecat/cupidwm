@@ -144,12 +144,17 @@ typedef struct Client {
 	Window win;
 	unsigned long map_seq;
 	int x, y, h, w;
+	int basew, baseh, incw, inch;
+	int maxw, maxh, minw, minh;
+	float mina, maxa;
 	int orig_x, orig_y, orig_w, orig_h;
 	int max_restore_x, max_restore_y, max_restore_w, max_restore_h;
 	int custom_stack_height;
 	int mon;
 	int ws;
 	Bool fixed;
+	Bool isurgent;
+	Bool neverfocus;
 	Bool floating;
 	Bool prev_floating;
 	Bool floating_saved;
@@ -169,6 +174,7 @@ typedef struct Client {
 	int ignore_unmap_events;
 	pid_t pid;
 	struct Client *next;
+	struct Client *snext;
 	struct Client *swallowed;
 	struct Client *swallower;
 } Client;
@@ -257,6 +263,7 @@ typedef struct {
 typedef struct {
 	int layout;
 	int gaps;
+	int nmaster;
 	float master_width[MAX_MONITORS];
 	Client *focused;
 } WorkspaceState;

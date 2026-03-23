@@ -1,4 +1,4 @@
-/* Extracted from cupidwm.c: bar drawing and interactions. */
+// bar module
 
 int collect_bar_clients(int mon, Client **list, int max_clients)
 {

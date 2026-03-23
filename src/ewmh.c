@@ -1,4 +1,4 @@
-/* Extracted from cupidwm.c: EWMH atoms and properties. */
+// ewmh module
 
 static int client_map_seq_cmp(const void *lhs, const void *rhs)
 {

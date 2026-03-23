@@ -1,4 +1,4 @@
-/* Extracted from cupidwm.c: input and X event handlers. */
+// input module
 
 static int monitor_at_point(int x_root, int y_root)
 {
@@ -34,7 +34,7 @@ static void activate_monitor(int mon)
 	if (!target || !client_is_visible_on_monitor(target, current_mon))
 		target = ws_focused[current_ws];
 	if (!target || !client_is_visible_on_monitor(target, current_mon))
-		target = first_visible_client(current_ws, current_mon, NULL);
+		target = stack_visible_client(current_ws, current_mon, NULL);
 
 	if (target) {
 		set_input_focus(target, True, False);
@@ -362,7 +362,20 @@ static Bool resolve_state_action(Bool current, long action, Bool *want_out)
 
 static Client *next_focus_candidate(Client *skip)
 {
-	return first_visible_client(current_ws, current_mon, skip);
+	return stack_visible_client(current_ws, current_mon, skip);
+}
+
+static void stack_send_to_bottom(Client *c)
+{
+	if (!c || c->ws < 0 || c->ws >= NUM_WORKSPACES)
+		return;
+
+	detachstack(c);
+	Client **pp = &workspace_stack[c->ws];
+	while (*pp)
+		pp = &(*pp)->snext;
+	*pp = c;
+	c->snext = NULL;
 }
 
 static void sync_urgency_from_wm_hints(Client *c)
@@ -381,28 +394,6 @@ static void sync_urgency_from_wm_hints(Client *c)
 		urgent = False;
 	}
 	window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION], urgent);
-	XFree(hints);
-}
-
-static void set_client_urgency_hint(Client *c, Bool urgent)
-{
-	if (!c)
-		return;
-
-	XWMHints *hints = XGetWMHints(dpy, c->win);
-	if (!hints) {
-		hints = XAllocWMHints();
-		if (!hints)
-			return;
-		hints->flags = 0;
-	}
-
-	if (urgent)
-		hints->flags |= XUrgencyHint;
-	else
-		hints->flags &= ~XUrgencyHint;
-
-	XSetWMHints(dpy, c->win, hints);
 	XFree(hints);
 }
 
@@ -495,11 +486,14 @@ static void apply_maximized_state(Client *c, Bool want_horz, Bool want_vert, Boo
 		int ny = want_vert ? wy : c->y;
 		int nw = want_horz ? MAX(1, ww) : c->w;
 		int nh = want_vert ? MAX(1, wh) : c->h;
+		apply_size_hints(c, &nx, &ny, &nw, &nh, True);
 		XMoveResizeWindow(dpy, c->win, nx, ny, (unsigned int)nw, (unsigned int)nh);
 		c->x = nx;
 		c->y = ny;
 		c->w = nw;
 		c->h = nh;
+		send_configure_notify(c, user_config.border_width);
+		restack_monitor(c->mon);
 			if (needs_borders && client_should_be_visible(c))
 				*needs_borders = True;
 		return;
@@ -518,6 +512,8 @@ static void apply_maximized_state(Client *c, Bool want_horz, Bool want_vert, Boo
 		c->y = c->max_restore_y;
 		c->w = MAX(1, c->max_restore_w);
 		c->h = MAX(1, c->max_restore_h);
+		apply_size_hints(c, &c->x, &c->y, &c->w, &c->h, True);
+		send_configure_notify(c, user_config.border_width);
 	}
 
 	if (c->max_forced_floating && !global_floating && !c->modal_forced_floating) {
@@ -530,6 +526,7 @@ static void apply_maximized_state(Client *c, Bool want_horz, Bool want_vert, Boo
 
 	c->max_forced_floating = False;
 	c->max_restore_valid = False;
+	restack_monitor(c->mon);
 	if (needs_borders && client_should_be_visible(c))
 		*needs_borders = True;
 }
@@ -583,20 +580,29 @@ void hdl_client_msg(XEvent *xev)
 		if (!c)
 			return;
 
-		XWindowChanges wc = {0};
-		unsigned int mask = CWStackMode;
 		int detail = (int)client_msg_ev->data.l[2];
 		if (detail < Above || detail > Opposite)
 			detail = Above;
-		wc.stack_mode = detail;
 
-		Window sibling = (Window)client_msg_ev->data.l[1];
-		if (sibling != None) {
-			wc.sibling = sibling;
-			mask |= CWSibling;
+		switch (detail) {
+		case Above:
+		case TopIf:
+			attachstack(c);
+			break;
+		case Below:
+		case BottomIf:
+			stack_send_to_bottom(c);
+			break;
+		case Opposite:
+		default:
+			if (c == focused)
+				stack_send_to_bottom(c);
+			else
+				attachstack(c);
+			break;
 		}
 
-		XConfigureWindow(dpy, c->win, mask, &wc);
+		restack_monitor(c->mon);
 		update_net_client_list();
 		return;
 	}
@@ -610,6 +616,21 @@ void hdl_client_msg(XEvent *xev)
 	if (client_msg_ev->message_type == atoms[ATOM_NET_ACTIVE_WINDOW]) {
 		Window w = find_toplevel(client_msg_ev->window);
 		Client *c = find_client(w);
+		if (!c && (client_msg_ev->window == root || w == root)) {
+			long hinted_vals[3] = {
+				client_msg_ev->data.l[2],
+				client_msg_ev->data.l[1],
+				client_msg_ev->data.l[0],
+			};
+			for (int i = 0; i < 3 && !c; i++) {
+				if (hinted_vals[i] <= 0)
+					continue;
+				Window hinted = (Window)hinted_vals[i];
+				if (hinted == None || hinted == root)
+					continue;
+				c = find_client(find_toplevel(hinted));
+			}
+		}
 		if (!c)
 			return;
 		if (c->suppress_focus_until_sec > 0) {
@@ -701,14 +722,26 @@ void hdl_client_msg(XEvent *xev)
 
 	if (client_msg_ev->message_type == atoms[ATOM_NET_WM_STATE]) {
 		Window w = client_msg_ev->window;
-		Client *c = find_client(find_toplevel(w));
-		if (!c)
-			return;
+		Window target = find_toplevel(w);
+		Client *c = find_client(target);
 
 		/* 0=remove, 1=add, 2=toggle */
 		long action = client_msg_ev->data.l[0];
 		Atom a1 = (Atom)client_msg_ev->data.l[1];
 		Atom a2 = (Atom)client_msg_ev->data.l[2];
+		if (a1 == atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION] ||
+		    a2 == atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION]) {
+			Window state_win = c ? c->win : target;
+			if (state_win == None || state_win == root)
+				return;
+			Bool current = window_has_ewmh_state(state_win, atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION]);
+			Bool want = current;
+			if (resolve_state_action(current, action, &want))
+				window_set_ewmh_state(state_win, atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION], want);
+			return;
+		}
+		if (!c)
+			return;
 		Bool needs_layout = False;
 		Bool needs_borders = False;
 		Bool needs_refocus = False;
@@ -819,17 +852,21 @@ void hdl_client_msg(XEvent *xev)
 				continue;
 			}
 
-			if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_SHADED] ||
-			    state_atoms[i] == atoms[ATOM_NET_WM_STATE_SKIP_TASKBAR] ||
-			    state_atoms[i] == atoms[ATOM_NET_WM_STATE_SKIP_PAGER] ||
-			    state_atoms[i] == atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION]) {
+			{
 				Bool current = window_has_ewmh_state(c->win, state_atoms[i]);
 				Bool want = current;
 				if (!resolve_state_action(current, action, &want))
 					continue;
 				window_set_ewmh_state(c->win, state_atoms[i], want);
-				if (state_atoms[i] == atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION])
-					set_client_urgency_hint(c, want);
+				if (want && !window_has_ewmh_state(c->win, state_atoms[i])) {
+					Atom ensured[2];
+					int ensured_n = 0;
+					if (window_has_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_FOCUSED]))
+						ensured[ensured_n++] = atoms[ATOM_NET_WM_STATE_FOCUSED];
+					ensured[ensured_n++] = state_atoms[i];
+					XChangeProperty(dpy, c->win, atoms[ATOM_NET_WM_STATE], XA_ATOM, 32,
+					                PropModeReplace, (unsigned char *)ensured, ensured_n);
+				}
 			}
 		}
 
@@ -875,7 +912,7 @@ void hdl_config_req(XEvent *xev)
 			if (c->win == config_ev->window)
 				break;
 
-	if (!c || c->floating || c->fullscreen) {
+	if (!c) {
 		/* allow client to configure itself */
 		XWindowChanges wc = {
 			.x = config_ev->x,
@@ -887,6 +924,49 @@ void hdl_config_req(XEvent *xev)
 			.stack_mode = config_ev->detail
 		};
 		XConfigureWindow(dpy, config_ev->window, config_ev->value_mask, &wc);
+		return;
+	}
+
+	if (c->floating || c->fullscreen) {
+		int nx = c->x;
+		int ny = c->y;
+		int nw = c->w;
+		int nh = c->h;
+
+		if (config_ev->value_mask & CWX)
+			nx = config_ev->x;
+		if (config_ev->value_mask & CWY)
+			ny = config_ev->y;
+		if (config_ev->value_mask & CWWidth)
+			nw = MAX(1, config_ev->width);
+		if (config_ev->value_mask & CWHeight)
+			nh = MAX(1, config_ev->height);
+
+		apply_size_hints(c, &nx, &ny, &nw, &nh, True);
+		XMoveResizeWindow(dpy, c->win, nx, ny, (unsigned int)nw, (unsigned int)nh);
+		c->x = nx;
+		c->y = ny;
+		c->w = nw;
+		c->h = nh;
+
+		if (config_ev->value_mask & (CWSibling | CWStackMode)) {
+			XWindowChanges wc = {
+				.sibling = config_ev->above,
+				.stack_mode = config_ev->detail
+			};
+			unsigned int stack_mask = config_ev->value_mask & (CWSibling | CWStackMode);
+			XConfigureWindow(dpy, c->win, stack_mask, &wc);
+			if ((config_ev->value_mask & CWStackMode) != 0) {
+				if (config_ev->detail == Below || config_ev->detail == BottomIf)
+					stack_send_to_bottom(c);
+				else
+					attachstack(c);
+				restack_monitor(c->mon);
+				update_net_client_list();
+			}
+		}
+
+		send_configure_notify(c, c->fullscreen ? 0 : user_config.border_width);
 		return;
 	}
 
@@ -916,6 +996,8 @@ void hdl_enter_ntf(XEvent *xev)
 {
 	if (!user_config.focus_follows_mouse || drag_mode != DRAG_NONE || in_ws_switch)
 		return;
+	if (suppress_pointer_focus_until_ms > monotonic_ms())
+		return;
 
 	XCrossingEvent *enter_ev = &xev->xcrossing;
 	if ((enter_ev->mode != NotifyNormal && enter_ev->mode != NotifyUngrab) ||
@@ -941,7 +1023,7 @@ void hdl_enter_ntf(XEvent *xev)
 		return;
 	}
 
-	set_input_focus(c, True, False);
+	set_input_focus(c, False, False);
 }
 
 void hdl_focus_in(XEvent *xev)
@@ -955,17 +1037,16 @@ void hdl_focus_in(XEvent *xev)
 		return;
 	}
 
-	if (focus_ev->mode == NotifyGrab || focus_ev->mode == NotifyUngrab)
-		return;
-
 	focused_top = find_toplevel(focused->win);
 	event_top = find_toplevel(focus_ev->window);
 
 	if (!event_top || event_top == root)
 		return;
 
-	if (event_top != focused_top)
-		set_input_focus(focused, False, False);
+	if (event_top == focused_top)
+		return;
+
+	set_input_focus(focused, False, False);
 }
 
 void hdl_destroy_ntf(XEvent *xev)
@@ -986,6 +1067,7 @@ void hdl_destroy_ntf(XEvent *xev)
 
 		if (c == drag_client || c == swap_target)
 			cancel_drag();
+		int removed_mon = CLAMP(c->mon, 0, MAX(0, n_mons - 1));
 
 		/* if client is swallowed, restore swallower */
 		if (c->swallower)
@@ -1024,6 +1106,7 @@ void hdl_destroy_ntf(XEvent *xev)
 				workspaces[i] = c->next;
 			else
 				prev->next = c->next;
+			detachstack(c);
 
 			ipc_notify_event("client_remove", ipc_details);
 			free(c);
@@ -1035,18 +1118,7 @@ void hdl_destroy_ntf(XEvent *xev)
 				tile();
 				update_borders();
 
-				/* prefer previous window else next */
-				Client *foc_new = NULL;
-				if (prev && client_is_visible_on_monitor(prev, current_mon))
-					foc_new = prev;
-				else {
-					for (Client *p = workspaces[i]; p; p = p->next) {
-						if (!client_is_visible_on_monitor(p, current_mon))
-							continue;
-						foc_new = p;
-						break;
-				}
-			}
+				Client *foc_new = stack_visible_client(i, removed_mon, NULL);
 
 				if (foc_new)
 					set_input_focus(foc_new, True, True);
@@ -1213,18 +1285,8 @@ void hdl_map_req(XEvent *xev)
 	if (!should_float && XGetTransientForHint(dpy, w, &transient))
 		should_float = True;
 
-	XSizeHints size_hints;
-	long supplied_ret;
-
-	if (!should_float &&
-		XGetWMNormalHints(dpy, w, &size_hints, &supplied_ret) &&
-		(size_hints.flags & PMinSize) && (size_hints.flags & PMaxSize) &&
-		size_hints.min_width  == size_hints.max_width &&
-		size_hints.min_height == size_hints.max_height) {
-
+	if (!should_float && c->fixed)
 		should_float = True;
-		c->fixed = True;
-	}
 
 	if (should_float || global_floating)
 		c->floating = True;
@@ -1243,6 +1305,7 @@ void hdl_map_req(XEvent *xev)
 		int mx, my, mw, mh;
 		monitor_workarea(c->mon, &mx, &my, &mw, &mh);
 		int x = mx + (mw - w_) / 2, y = my + (mh - h_) / 2;
+		apply_size_hints(c, &x, &y, &w_, &h_, True);
 		c->x = x;
 		c->y = y;
 		c->w = w_;
@@ -1341,6 +1404,8 @@ void hdl_motion(XEvent *xev)
 	if (drag_mode == DRAG_NONE || !drag_client) {
 		if (!user_config.focus_follows_mouse || in_ws_switch)
 			return;
+		if (suppress_pointer_focus_until_ms > monotonic_ms())
+			return;
 
 		activate_monitor(monitor_at_point(motion_ev->x_root, motion_ev->y_root));
 
@@ -1368,7 +1433,7 @@ void hdl_motion(XEvent *xev)
 			c->suppress_enter_focus_once = False;
 		}
 
-		set_input_focus(c, True, False);
+		set_input_focus(c, False, False);
 		return;
 	}
 
@@ -1476,6 +1541,8 @@ void hdl_motion(XEvent *xev)
 
 		drag_client->w = CLAMP(nw, MIN_WINDOW_SIZE, max_w);
 		drag_client->h = CLAMP(nh, MIN_WINDOW_SIZE, max_h);
+		apply_size_hints(drag_client, &drag_client->x, &drag_client->y,
+		                 &drag_client->w, &drag_client->h, True);
 
 		XResizeWindow(dpy, drag_client->win, drag_client->w, drag_client->h);
 	}
@@ -1606,7 +1673,7 @@ void hdl_unmap_ntf(XEvent *xev)
 		if (unmapped == drag_client || unmapped == swap_target)
 			cancel_drag();
 
-		Client *replacement = first_visible_client(unmapped_ws, unmapped->mon, unmapped);
+		Client *replacement = stack_visible_client(unmapped_ws, unmapped->mon, unmapped);
 
 		if (ws_focused[unmapped_ws] == unmapped)
 			ws_focused[unmapped_ws] = replacement;
