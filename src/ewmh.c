@@ -204,6 +204,129 @@ void update_net_client_list(void)
 	                (unsigned char *)stacking_list, n_stacking);
 }
 
+static void apply_window_strut(Window w, int screen_w, int screen_h, Bool *any_strut)
+{
+	XWindowAttributes wa;
+	if (!XGetWindowAttributes(dpy, w, &wa) || wa.map_state != IsViewable)
+		return;
+
+	long left = 0;
+	long right = 0;
+	long top = 0;
+	long bottom = 0;
+	long left_start_y = 0;
+	long left_end_y = screen_h - 1;
+	long right_start_y = 0;
+	long right_end_y = screen_h - 1;
+	long top_start_x = 0;
+	long top_end_x = screen_w - 1;
+	long bot_start_x = 0;
+	long bot_end_x = screen_w - 1;
+	Bool have_strut = False;
+
+	long *str = NULL;
+	Atom actual = None;
+	int sfmt = 0;
+	unsigned long len = 0;
+	unsigned long rem = 0;
+
+	if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_STRUT_PARTIAL], 0, 12, False, XA_CARDINAL,
+		       &actual, &sfmt, &len, &rem,
+		       (unsigned char **)&str) == Success && str) {
+		if (actual == XA_CARDINAL && sfmt == 32 && len >= 12) {
+			left = str[0];
+			right = str[1];
+			top = str[2];
+			bottom = str[3];
+			left_start_y = str[4];
+			left_end_y = str[5];
+			right_start_y = str[6];
+			right_end_y = str[7];
+			top_start_x = str[8];
+			top_end_x = str[9];
+			bot_start_x = str[10];
+			bot_end_x = str[11];
+			have_strut = True;
+		}
+		XFree(str);
+	}
+
+	if (!have_strut) {
+		str = NULL;
+		if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_STRUT], 0, 4, False, XA_CARDINAL,
+		       &actual, &sfmt, &len, &rem,
+		       (unsigned char **)&str) == Success && str) {
+			if (actual == XA_CARDINAL && sfmt == 32 && len >= 4) {
+				left = str[0];
+				right = str[1];
+				top = str[2];
+				bottom = str[3];
+				have_strut = True;
+			}
+			XFree(str);
+		}
+	}
+
+	/* skip empty struts */
+	if (!have_strut || (!left && !right && !top && !bottom))
+		return;
+
+	if (any_strut)
+		*any_strut = True;
+
+	for (int m = 0; m < n_mons; m++) {
+		int mx = mons[m].x;
+		int my = mons[m].y;
+		int mw = mons[m].w;
+		int mh = mons[m].h;
+
+		/* strip monitors whose vertical span does not intersect */
+		if (left > 0) {
+			long span_start = left_start_y;
+			long span_end = left_end_y;
+			if (span_end >= my && span_start <= my + mh - 1) {
+				int reserve = (int)MAX(0, left - mx);
+				if (reserve > 0)
+					mons[m].reserve_left = MAX(mons[m].reserve_left, reserve);
+			}
+		}
+
+		if (right > 0) {
+			long span_start = right_start_y;
+			long span_end = right_end_y;
+			if (span_end >= my && span_start <= my + mh - 1) {
+				int global_reserved_left = screen_w - (int)right;
+				int overlap = (mx + mw) - global_reserved_left;
+				int reserve = MAX(0, overlap);
+				if (reserve > 0)
+					mons[m].reserve_right = MAX(mons[m].reserve_right, reserve);
+			}
+		}
+
+		if (top > 0) {
+			long span_start = top_start_x;
+			long span_end = top_end_x;
+			if (span_end >= mx && span_start <= mx + mw - 1) {
+				int reserve = (int)MAX(0, top - my);
+				if (reserve > 0)
+					mons[m].reserve_top = MAX(mons[m].reserve_top, reserve);
+			}
+		}
+
+		if (bottom > 0) {
+			long span_start = bot_start_x;
+			long span_end = bot_end_x;
+			if (span_end >= mx && span_start <= mx + mw - 1) {
+				int global_reserved_top = screen_h - (int)bottom;
+				int overlap = (my + mh) - global_reserved_top;
+				int reserve = MAX(0, overlap);
+				if (reserve > 0)
+					mons[m].reserve_bottom = MAX(mons[m].reserve_bottom, reserve);
+			}
+		}
+	}
+}
+
 void update_struts(void)
 {
 	/* reset all reserves */
@@ -214,140 +337,29 @@ void update_struts(void)
 		mons[i].reserve_bottom = 0;
 	}
 
+	int screen_w = scr_width;
+	int screen_h = scr_height;
+	Bool any_strut = False;
+
 	Window root_ret;
 	Window parent_ret;
 	Window *children = NULL;
 	unsigned int n_children = 0;
 
-	if (!XQueryTree(dpy, root, &root_ret, &parent_ret, &children, &n_children))
-		return;
-
-	int screen_w = scr_width;
-	int screen_h = scr_height;
-
-	for (unsigned int i = 0; i < n_children; i++) {
-		Window w = children[i];
-
-		XWindowAttributes wa;
-		if (!XGetWindowAttributes(dpy, w, &wa) || wa.map_state != IsViewable)
-			continue;
-
-		long left = 0;
-		long right = 0;
-		long top = 0;
-		long bottom = 0;
-		long left_start_y = 0;
-		long left_end_y = screen_h - 1;
-		long right_start_y = 0;
-		long right_end_y = screen_h - 1;
-		long top_start_x = 0;
-		long top_end_x = screen_w - 1;
-		long bot_start_x = 0;
-		long bot_end_x = screen_w - 1;
-		Bool have_strut = False;
-
-		long *str = NULL;
-		Atom actual = None;
-		int sfmt = 0;
-		unsigned long len = 0;
-		unsigned long rem = 0;
-
-		if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_STRUT_PARTIAL], 0, 12, False, XA_CARDINAL,
-				       &actual, &sfmt, &len, &rem,
-				       (unsigned char **)&str) == Success && str) {
-			if (actual == XA_CARDINAL && sfmt == 32 && len >= 12) {
-				left = str[0];
-				right = str[1];
-				top = str[2];
-				bottom = str[3];
-				left_start_y = str[4];
-				left_end_y = str[5];
-				right_start_y = str[6];
-				right_end_y = str[7];
-				top_start_x = str[8];
-				top_end_x = str[9];
-				bot_start_x = str[10];
-				bot_end_x = str[11];
-				have_strut = True;
-			}
-			XFree(str);
-		}
-
-		if (!have_strut) {
-			str = NULL;
-			if (XGetWindowProperty(dpy, w, atoms[ATOM_NET_WM_STRUT], 0, 4, False, XA_CARDINAL,
-					       &actual, &sfmt, &len, &rem,
-					       (unsigned char **)&str) == Success && str) {
-				if (actual == XA_CARDINAL && sfmt == 32 && len >= 4) {
-					left = str[0];
-					right = str[1];
-					top = str[2];
-					bottom = str[3];
-					have_strut = True;
-				}
-				XFree(str);
-			}
-		}
-
-		/* skip empty struts */
-		if (!have_strut || (!left && !right && !top && !bottom))
-			continue;
-
-		for (int m = 0; m < n_mons; m++) {
-			int mx = mons[m].x;
-			int my = mons[m].y;
-			int mw = mons[m].w;
-			int mh = mons[m].h;
-
-			/* strip monitors whose vertical span does not intersect */
-			if (left > 0) {
-				long span_start = left_start_y;
-				long span_end = left_end_y;
-				if (span_end >= my && span_start <= my + mh - 1) {
-					int reserve = (int)MAX(0, left - mx);
-					if (reserve > 0)
-						mons[m].reserve_left = MAX(mons[m].reserve_left, reserve);
-				}
-			}
-
-			if (right > 0) {
-				long span_start = right_start_y;
-				long span_end = right_end_y;
-				if (span_end >= my && span_start <= my + mh - 1) {
-					int global_reserved_left = screen_w - (int)right;
-					int overlap = (mx + mw) - global_reserved_left;
-					int reserve = MAX(0, overlap);
-					if (reserve > 0)
-						mons[m].reserve_right = MAX(mons[m].reserve_right, reserve);
-				}
-			}
-
-			if (top > 0) {
-				long span_start = top_start_x;
-				long span_end = top_end_x;
-				if (span_end >= mx && span_start <= mx + mw - 1) {
-					int reserve = (int)MAX(0, top - my);
-					if (reserve > 0)
-						mons[m].reserve_top = MAX(mons[m].reserve_top, reserve);
-				}
-			}
-
-			if (bottom > 0) {
-				long span_start = bot_start_x;
-				long span_end = bot_end_x;
-				if (span_end >= mx && span_start <= mx + mw - 1) {
-					int global_reserved_top = screen_h - (int)bottom;
-					int overlap = (my + mh) - global_reserved_top;
-					int reserve = MAX(0, overlap);
-					if (reserve > 0)
-						mons[m].reserve_bottom = MAX(mons[m].reserve_bottom, reserve);
-				}
-			}
-		}
+	if (XQueryTree(dpy, root, &root_ret, &parent_ret, &children, &n_children)) {
+		for (unsigned int i = 0; i < n_children; i++)
+			apply_window_strut(children[i], screen_w, screen_h, &any_strut);
 	}
 
 	if (children)
 		XFree(children);
+
+	if (!any_strut) {
+		for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
+			for (Client *c = workspaces[ws]; c; c = c->next)
+				apply_window_strut(c->win, screen_w, screen_h, &any_strut);
+		}
+	}
 
 	if (user_config.showbar) {
 		for (int i = 0; i < n_mons; i++) {
