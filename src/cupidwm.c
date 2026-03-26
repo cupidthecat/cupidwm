@@ -3639,10 +3639,28 @@ void resize_win_left(void)
 	XResizeWindow(dpy, focused->win, focused->w, focused->h);
 }
 
+static Bool process_xevents_bounded(XEvent *xev, int max_events)
+{
+	if (!xev || max_events <= 0)
+		return False;
+
+	Bool handled = False;
+	int processed = 0;
+	while (running && processed < max_events && XPending(dpy)) {
+		XNextEvent(dpy, xev);
+		handle_xevent(xev);
+		handled = True;
+		processed++;
+	}
+
+	return handled;
+}
+
 void run(void)
 {
 	running = True;
 	XEvent xev;
+	const int max_xevents_per_tick = 128;
 	time_t last_status_tick = 0;
 	time_t last_monitor_probe = 0;
 	int xfd = ConnectionNumber(dpy);
@@ -3652,7 +3670,6 @@ void run(void)
 	while (running) {
 		long timeout_ms = -1;
 		time_t now = time(NULL);
-		Bool handled_xevents = False;
 
 		if (!status_text_override_active() && user_config.status_interval_sec > 0) {
 			if (last_status_tick == 0)
@@ -3676,11 +3693,7 @@ void run(void)
 			break;
 
 		if (XPending(dpy)) {
-			while (running && XPending(dpy)) {
-				XNextEvent(dpy, &xev);
-				handle_xevent(&xev);
-				handled_xevents = True;
-			}
+			process_xevents_bounded(&xev, max_xevents_per_tick);
 		} else {
 			fd_set fds;
 			FD_ZERO(&fds);
@@ -3718,20 +3731,13 @@ void run(void)
 						break;
 
 					if (FD_ISSET(xfd, &fds)) {
-						while (running && XPending(dpy)) {
-							XNextEvent(dpy, &xev);
-							handle_xevent(&xev);
-							handled_xevents = True;
-						}
+						process_xevents_bounded(&xev, max_xevents_per_tick);
 					}
 				}
 		}
 
 		if (!running)
 			break;
-
-		if (handled_xevents)
-			update_net_client_list();
 
 		if (!running)
 			break;

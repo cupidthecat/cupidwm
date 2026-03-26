@@ -378,6 +378,28 @@ static void stack_send_to_bottom(Client *c)
 	c->snext = NULL;
 }
 
+static Client *swap_target_for_pointer_child(Window child)
+{
+	if (child == None || child == root)
+		return NULL;
+
+	Window target_win = find_toplevel(child);
+	if (target_win == None || target_win == root)
+		return NULL;
+
+	Client *target = find_client(target_win);
+	if (!target)
+		return NULL;
+	if (target->ws != current_ws)
+		return NULL;
+	if (target->floating)
+		return NULL;
+	if (!target->mapped)
+		return NULL;
+
+	return target;
+}
+
 static void sync_urgency_from_wm_hints(Client *c)
 {
 	if (!c)
@@ -1463,29 +1485,12 @@ void hdl_motion(XEvent *xev)
 		Window root_ret, child;
 		int rx, ry, wx, wy;
 		unsigned int mask;
-		XQueryPointer(dpy, root, &root_ret, &child, &rx, &ry, &wx, &wy, &mask);
+		if (!XQueryPointer(dpy, root, &root_ret, &child, &rx, &ry, &wx, &wy, &mask))
+			return;
 
-		Client *new_target = NULL;
-
-			for (Client *c = workspaces[current_ws]; c; c = c->next) {
-				if (c == drag_client || c->floating)
-					continue;
-			if (c->win == child) {
-				new_target = c;
-				break;
-			}
-			Window root_ret2, parent;
-			Window *children;
-			unsigned int n_children;
-			if (XQueryTree(dpy, child, &root_ret2, &parent, &children, &n_children)) {
-				if (children)
-					XFree(children);
-				if (parent == c->win) {
-					new_target = c;
-					break;
-				}
-			}
-		}
+		Client *new_target = swap_target_for_pointer_child(child);
+		if (new_target == drag_client)
+			new_target = NULL;
 
 		if (new_target != swap_target) {
 			if (swap_target) {
