@@ -21,7 +21,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config clang \
-            libx11-dev libxinerama-dev libxrandr-dev libxcursor-dev \
+            libx11-dev libxinerama-dev libxrandr-dev libxcursor-dev libxtst-dev \
             libxft-dev libfontconfig-dev libfreetype6-dev \
             cppcheck shellcheck \
             xvfb xserver-xephyr x11-utils x11-xserver-utils xdotool xterm
@@ -54,4 +54,6 @@ jobs:
           path: |
             /tmp/cupidwm-smoke.*
             /tmp/cupidwm-ewmh.*
+            /tmp/cupidwm-protocols.*
+            /tmp/cupidwm-input.*
             /tmp/cupidwm-ipc.*

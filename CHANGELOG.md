@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Keep workspace changes and focus restoration on the selected monitor, even
+  when another monitor displays the same workspace number.
+- Preserve keyboard input after moving a window between monitors. Mouse drags
+  and keyboard moves now update monitor ownership and workspace state together.
+- Preserve client protocols, supply valid focus timestamps, and keep window
+  manager mouse gestures out of application input streams. Stop repeated EWMH
+  property writes from keeping an idle event loop busy.
+- Add protocol and two-monitor input regressions to the GCC and Clang CI jobs.
+
 ## 2026-03-17
 
 - Reworked IPC command intake to stage accepted sockets in a pending nonblocking client queue integrated into the WM `select()` loop, so slow writers no longer risk delaying unrelated event-loop work.

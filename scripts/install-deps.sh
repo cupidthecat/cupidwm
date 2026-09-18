@@ -111,6 +111,7 @@ arch)
 		libx11 libxinerama libxrandr libxcursor libxft fontconfig freetype2
 	)
 	smoke_pkgs=(
+		libxtst
 		xorg-server-xephyr xorg-xdpyinfo xorg-xprop xorg-xwininfo xorg-xsetroot
 		xorg-server-xvfb
 		xdotool xterm gawk sed grep
@@ -123,6 +124,7 @@ debian)
 		libxft-dev libfontconfig-dev libfreetype6-dev
 	)
 	smoke_pkgs=(
+		libxtst-dev
 		xserver-xephyr xvfb x11-utils x11-xserver-utils xdotool xterm gawk sed grep
 	)
 	;;
@@ -133,6 +135,7 @@ fedora)
 		libXft-devel fontconfig-devel freetype-devel
 	)
 	smoke_pkgs=(
+		libXtst-devel
 		xorg-x11-server-Xephyr xorg-x11-server-Xvfb xorg-x11-utils xorg-x11-server-utils xdpyinfo
 		xdotool xterm gawk sed grep
 	)

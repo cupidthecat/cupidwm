@@ -38,8 +38,28 @@ cupidwm handles:
 
 ## ICCCM Behaviors
 
-cupidwm sends `WM_TAKE_FOCUS` client messages to windows that advertise the
-protocol through `WM_PROTOCOLS`.
+cupidwm preserves each client's `WM_PROTOCOLS` property. When offering focus,
+it sends `WM_TAKE_FOCUS` only to clients that advertise that protocol, with a
+server timestamp in the message. It also respects the `WM_HINTS` input flag
+when deciding whether to set focus directly.
+
+Ordinary clicks are replayed to the application after focus is selected.
+Window-manager move and resize gestures consume both the press and release,
+so applications do not receive half of a mouse gesture. Temporary keyboard
+grabs and override-redirect menus can keep their own focus.
+
+These behaviors follow the focus and client-property conventions in the
+[ICCCM](https://www.x.org/releases/current/doc/xorg-docs/icccm/icccm.html).
+
+## Monitor Workspaces
+
+Changing a workspace affects the selected monitor. Selecting a workspace that
+another monitor already displays does not swap the two views. Focus restoration
+uses windows on the selected monitor, including when that monitor is empty.
+
+Moving a window to another monitor updates its monitor assignment, workspace,
+stacking list, and desktop property together. Keyboard moves and completed
+mouse drags use the same transfer path.
 
 ## Conformance Tests
 
@@ -51,7 +71,12 @@ make test-ewmh
 
 The suite validates root property publication, active-window tracking,
 workspace desktop metadata, client list ordering/exports, and workarea/strut
-updates.
+updates. `make test-protocols` checks client protocols, focus timestamps, click
+delivery, and idle property traffic with an Xlib client. `make test-input`
+checks workspace selection and keyboard delivery across two monitors.
+
+Both regression suites run through `make check` and CI. They test X11 behavior
+directly; they do not launch packaged Electron applications.
 
 ## Notes
 

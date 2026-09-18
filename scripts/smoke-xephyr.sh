@@ -32,7 +32,7 @@ need_cmd() {
 	fi
 }
 
-for cmd in Xephyr xdpyinfo xprop xdotool xterm xwininfo awk sed grep mktemp; do
+for cmd in Xephyr xdpyinfo xprop xdotool xterm xwininfo awk sed grep mktemp timeout; do
 	need_cmd "${cmd}"
 done
 
@@ -73,7 +73,7 @@ wm_alive() {
 
 wait_for_display() {
 	for _ in $(seq 1 100); do
-		if xdpyinfo >/dev/null 2>&1; then
+		if timeout 2s xdpyinfo >/dev/null 2>&1; then
 			return 0
 		fi
 		if [ -n "${xephyr_pid}" ] && ! kill -0 "${xephyr_pid}" 2>/dev/null; then
@@ -88,7 +88,7 @@ choose_test_display() {
 	local num="${DISPLAY_NUM}"
 	for _ in $(seq 1 50); do
 		if [ ! -e "/tmp/.X${num}-lock" ]; then
-			if ! DISPLAY=":${num}" xdpyinfo >/dev/null 2>&1; then
+			if ! DISPLAY=":${num}" timeout 1s xdpyinfo >/dev/null 2>&1; then
 				TEST_DISPLAY=":${num}"
 				export DISPLAY="${TEST_DISPLAY}"
 				return 0
