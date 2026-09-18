@@ -61,11 +61,24 @@ Reference docs:
 - [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md)
 - [CHANGELOG.md](CHANGELOG.md)
 
+## Multiple monitors
+
+Each monitor has its own workspace view. Clicking workspace 2 in one monitor's
+bar leaves the other monitors on their current workspaces. Two monitors can
+view the same workspace number; each shows the windows assigned to that monitor.
+
+With the default bindings, `Super+,` and `Super+.` focus the previous and next
+monitor. Add `Shift` to move the focused window there. `Super` + left-button
+drag also moves a window between monitors. The window joins the destination
+monitor's current workspace when the drag ends and keeps keyboard focus.
+
 ## Testing
 
 - Smoke test (Xephyr): `make test-smoke`
   - Includes a regression check for independent monitor workspace views
 - EWMH invariants suite (Xephyr): `make test-ewmh`
+- X11 protocol and click-delivery regressions: `make test-protocols`
+- Workspace and input regressions with two monitors: `make test-input`
 - IPC roundtrip suite (Xephyr, requires an IPC-enabled build): `make test-ipc`
   - Includes persistence regression for workspace/layout recovery after `reload`
   - Includes JSON escaping regression coverage for status payloads with quotes/backslashes
@@ -74,7 +87,7 @@ Reference docs:
 - Full local gate: `make check`
   - Builds sanitizer debug binary
   - Runs `cppcheck` and `shellcheck` when available
-  - Runs smoke + EWMH Xephyr suites when X11 test deps are present
+  - Runs smoke, EWMH, protocol, and monitor-input suites when X11 test dependencies are present
   - Auto-uses `xvfb-run` when no `DISPLAY` is set (if available)
 
 ## Operations

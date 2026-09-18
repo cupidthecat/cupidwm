@@ -12,7 +12,7 @@ source "${SCRIPT_DIR}/assert.sh"
 
 [ -n "$HOST_DISPLAY" ] || fail "host DISPLAY is not set"
 
-for cmd in Xephyr xdpyinfo xprop xdotool xterm xwininfo awk sed grep mktemp; do
+for cmd in Xephyr xdpyinfo xprop xdotool xterm xwininfo awk sed grep mktemp timeout; do
 	need_cmd "$cmd"
 done
 
@@ -41,7 +41,7 @@ trap cleanup EXIT INT TERM
 choose_test_display() {
 	local num="$DISPLAY_NUM"
 	for _ in $(seq 1 40); do
-		if [ ! -e "/tmp/.X${num}-lock" ] && ! DISPLAY=":${num}" xdpyinfo >/dev/null 2>&1; then
+		if [ ! -e "/tmp/.X${num}-lock" ] && ! DISPLAY=":${num}" timeout 1s xdpyinfo >/dev/null 2>&1; then
 			TEST_DISPLAY=":${num}"
 			export DISPLAY="$TEST_DISPLAY"
 			return 0
@@ -53,7 +53,7 @@ choose_test_display() {
 
 wait_display() {
 	for _ in $(seq 1 80); do
-		if xdpyinfo >/dev/null 2>&1; then
+		if timeout 2s xdpyinfo >/dev/null 2>&1; then
 			return 0
 		fi
 		sleep 0.1
@@ -212,6 +212,15 @@ wait_prop_order root _NET_CLIENT_LIST_STACKING "$hex_a" "$hex_b" || fail "restac
 "${MSG_TOOL}" "$wid_a" _NET_RESTACK_WINDOW 0 "$wid_b" 0 0 0 || fail "failed to send _NET_RESTACK_WINDOW above"
 sleep 0.2
 wait_prop_order root _NET_CLIENT_LIST_STACKING "$hex_b" "$hex_a" || fail "restack above did not update stacking order"
+
+# _NET_WM_STATE_ABOVE/BELOW must keep the exported stacking list in sync.
+"${MSG_TOOL}" "$wid_a" _NET_WM_STATE 1 _NET_WM_STATE_BELOW 0 1 || fail "failed to add below state"
+wait_prop_order root _NET_CLIENT_LIST_STACKING "$hex_a" "$hex_b" || fail "below state did not update stacking order"
+"${MSG_TOOL}" "$wid_a" _NET_WM_STATE 0 _NET_WM_STATE_BELOW 0 1 || fail "failed to remove below state"
+
+"${MSG_TOOL}" "$wid_a" _NET_WM_STATE 1 _NET_WM_STATE_ABOVE 0 1 || fail "failed to add above state"
+wait_prop_order root _NET_CLIENT_LIST_STACKING "$hex_b" "$hex_a" || fail "above state did not update stacking order"
+"${MSG_TOOL}" "$wid_a" _NET_WM_STATE 0 _NET_WM_STATE_ABOVE 0 1 || fail "failed to remove above state"
 
 "${MSG_TOOL}" "$wid_a" _NET_WM_STATE 1 _NET_WM_STATE_FULLSCREEN 0 1 || fail "failed to send fullscreen-add client message"
 sleep 0.3

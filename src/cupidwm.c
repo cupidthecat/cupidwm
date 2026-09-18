@@ -110,6 +110,7 @@ Bool is_child_proc(pid_t pid1, pid_t pid2);
 void move_master_next(void);
 void move_master_prev(void);
 void move_client_to_workspace(Client *moved, int ws, Bool focus_target);
+static void move_client_to_monitor(Client *c, int mon, Bool center, Bool warp);
 void move_next_mon(void);
 void move_prev_mon(void);
 void send_to_mon_dir(int direction);
@@ -711,8 +712,6 @@ void publish_current_desktop(void)
 
 Client *first_visible_client(int ws, int mon, Client *skip)
 {
-	Client *fallback = NULL;
-
 	if (ws < 0 || ws >= NUM_WORKSPACES)
 		return NULL;
 
@@ -721,11 +720,9 @@ Client *first_visible_client(int ws, int mon, Client *skip)
 			continue;
 		if (c->mon == mon)
 			return c;
-		if (!fallback)
-			fallback = c;
 	}
 
-	return fallback;
+	return NULL;
 }
 
 Client *stack_visible_client(int ws, int mon, Client *skip)
@@ -733,18 +730,12 @@ Client *stack_visible_client(int ws, int mon, Client *skip)
 	if (ws < 0 || ws >= NUM_WORKSPACES)
 		return NULL;
 
-	Client *fallback = NULL;
 	for (Client *c = workspace_stack[ws]; c; c = c->snext) {
 		if (!client_is_visible(c) || c == skip)
 			continue;
 		if (c->mon == mon)
 			return c;
-		if (!fallback)
-			fallback = c;
 	}
-
-	if (fallback)
-		return fallback;
 
 	return first_visible_client(ws, mon, skip);
 }
@@ -812,23 +803,10 @@ static void set_monitor_workspace(int mon, int ws)
 	}
 
 	int old_ws = mons[mon].view_ws;
-	int swap_mon = -1;
-	for (int i = 0; i < n_mons; i++) {
-		if (i != mon && mons[i].view_ws == ws) {
-			swap_mon = i;
-			break;
-		}
-	}
-
 	mons[mon].prev_view_ws = old_ws;
 	mons[mon].view_ws = ws;
 
-	if (swap_mon >= 0) {
-		mons[swap_mon].prev_view_ws = mons[swap_mon].view_ws;
-		mons[swap_mon].view_ws = old_ws;
-	}
-
-	if (mon == current_mon || swap_mon == current_mon)
+	if (mon == current_mon)
 		sync_active_monitor_state();
 }
 
@@ -841,8 +819,12 @@ static void refresh_client_visibility(void)
 			if (client_should_be_visible(c))
 				XMapWindow(dpy, c->win);
 			else {
-				c->ignore_unmap_events += 2;
-				XUnmapWindow(dpy, c->win);
+				XWindowAttributes wa;
+				/* An already hidden window does not generate another UnmapNotify. */
+				if (XGetWindowAttributes(dpy, c->win, &wa) && wa.map_state != IsUnmapped) {
+					c->ignore_unmap_events += 2;
+					XUnmapWindow(dpy, c->win);
+				}
 			}
 		}
 	}
@@ -1631,10 +1613,6 @@ Client *add_client(Window w, int ws)
 	grab_button(Button1, user_config.modkey | ShiftMask, w, False, ButtonPressMask);
 	grab_button(Button3, user_config.modkey, w, False, ButtonPressMask);
 
-	/* allow for more graceful exitting */
-	Atom protos[] = {atoms[ATOM_WM_DELETE_WINDOW]};
-	XSetWMProtocols(dpy, w, protos, 1);
-
 	XWindowAttributes wa;
 	XGetWindowAttributes(dpy, w, &wa);
 	c->x = wa.x;
@@ -1825,14 +1803,15 @@ void change_workspace(int ws)
 		return;
 
 	/* remember last focus for workspace we are leaving */
-	if (focused && focused->ws == current_ws)
+	if (focused && focused->mon == current_mon && focused->ws == current_ws)
 		ws_focused[current_ws] = focused;
 
 	in_ws_switch = True;
 
 	Bool visible_scratchpads[MAX_SCRATCHPADS] = {False};
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
-		if (scratchpads[i].client && scratchpads[i].enabled) {
+		if (scratchpads[i].client && scratchpads[i].enabled &&
+		    scratchpads[i].client->mon == current_mon) {
 			visible_scratchpads[i] = True;
 		}
 	}
@@ -1847,19 +1826,7 @@ void change_workspace(int ws)
 		if (visible_scratchpads[i] && scratchpads[i].client) {
 			Client *c = scratchpads[i].client;
 
-			/* remove from old workspace */
-			Client **pp = &workspaces[c->ws];
-			while (*pp && *pp != c)
-				pp = &(*pp)->next;
-
-			if (*pp)
-				*pp = c->next;
-
-			/* add to new workspace */
-			c->next = workspaces[current_ws];
-			workspaces[current_ws] = c;
-			c->ws = current_ws;
-			c->mon = current_mon;
+			relink_client_to_workspace(c, current_ws);
 		}
 	}
 
@@ -1885,39 +1852,27 @@ void change_workspace(int ws)
 	}
 
 	refresh_client_visibility();
-	update_struts();
-	tile();
 
 	XUngrabServer(dpy);
 	XSync(dpy, False);
+	update_struts();
+	tile();
 
-	/* restore last focused client for this workspace */
-	focused = ws_focused[current_ws];
-
-	if (focused && !client_is_visible(focused))
-		focused = NULL;
-
-	if (!focused && workspaces[current_ws]) {
-		focused = first_visible_client(current_ws, current_mon, NULL);
-		if (focused)
-			current_mon = CLAMP(focused->mon, 0, n_mons - 1);
-		else
-			focused = NULL;
-	}
+	/* Restore focus only among windows on the monitor whose view changed. */
+	Client *target = ws_focused[current_ws];
+	if (!client_is_visible(target) || target->mon != current_mon)
+		target = stack_visible_client(current_ws, current_mon, NULL);
 
 	/* try focus scratchpad if no other window available */
 	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
-		if (!focused && visible_scratchpads[i] && scratchpads[i].client) {
-			focused = scratchpads[i].client;
+		if (!target && visible_scratchpads[i] && client_is_visible(scratchpads[i].client)) {
+			target = scratchpads[i].client;
 			break;
 		}
 	}
 
-	/* Focus without warping inside the grab; warp separately now that the
-	 * grab is released so warp_cursor does not block all clients. */
-	set_input_focus(focused, False, False);
-	if (focused && user_config.warp_cursor)
-		warp_cursor(focused);
+	/* Focus protocols and pointer movement run after releasing the server. */
+	set_input_focus(target, False, True);
 
 	previous_workspace = old_ws;
 	publish_current_desktop();
@@ -2302,8 +2257,6 @@ void focus_mon_dir(int direction)
 	int target_ws = mons[target_mon].view_ws;
 	Client *target_client = first_visible_client(target_ws, target_mon, NULL);
 	if (target_client) {
-		current_mon = target_mon;
-		sync_active_monitor_state();
 		set_input_focus(target_client, True, True);
 		return;
 	}
@@ -2358,10 +2311,7 @@ void focus_next_mon(void)
 
 	if (target_client) {
 		/* focus the window on target monitor */
-		focused = target_client;
-		current_mon = target_mon;
-		sync_active_monitor_state();
-		set_input_focus(focused, True, True);
+		set_input_focus(target_client, True, True);
 	}
 	else {
 		/* no windows on target monitor, just move cursor to center and update current_mon */
@@ -2386,10 +2336,7 @@ void focus_prev_mon(void)
 
 	if (target_client) {
 		/* focus the window on target monitor */
-		focused = target_client;
-		current_mon = target_mon;
-		sync_active_monitor_state();
-		set_input_focus(focused, True, True);
+		set_input_focus(target_client, True, True);
 	}
 	else {
 		current_mon = target_mon;
@@ -2407,19 +2354,18 @@ int get_monitor_for(Client *c)
 	if (!mons || n_mons <= 0 || !c)
 		return 0;
 
-	int cx = c->x + c->w / 2;
-	int cy = c->y + c->h / 2;
+	int best = CLAMP(c->mon, 0, n_mons - 1);
+	long long best_area = 0;
 	for (int i = 0; i < n_mons; i++) {
-		Bool in_mon_bounds =
-			cx >= mons[i].x &&
-			cx < mons[i].x + mons[i].w &&
-			cy >= (int)mons[i].y &&
-			cy < mons[i].y + mons[i].h;
-
-		if (in_mon_bounds)
-			return i;
+		int w = MAX(0, MIN(c->x + c->w, mons[i].x + mons[i].w) - MAX(c->x, mons[i].x));
+		int h = MAX(0, MIN(c->y + c->h, mons[i].y + mons[i].h) - MAX(c->y, mons[i].y));
+		long long area = (long long)w * h;
+		if (area > best_area || (area == best_area && i == c->mon)) {
+			best = i;
+			best_area = area;
+		}
 	}
-	return 0;
+	return best;
 }
 
 pid_t get_parent_process(pid_t c)
@@ -2852,42 +2798,25 @@ void move_client_to_workspace(Client *moved, int ws, Bool focus_target)
 		return;
 
 	int from_ws = moved->ws;
-	Bool from_current = monitor_views_workspace(moved->mon, from_ws);
-	Bool to_current = monitor_views_workspace(moved->mon, ws);
-	Bool was_focused = (focused == moved);
-
-	if (from_current && moved->mapped) {
-		moved->ignore_unmap_events += 2;
-		XUnmapWindow(dpy, moved->win);
-		moved->mapped = True;
-	}
-
-	Client **pp = &workspaces[from_ws];
-	while (*pp && *pp != moved)
-		pp = &(*pp)->next;
-
-	if (!*pp)
+	Bool from_current = client_should_be_visible(moved);
+	if (!relink_client_to_workspace(moved, ws))
 		return;
-
-	*pp = moved->next;
-
-	moved->next = workspaces[ws];
-	workspaces[ws] = moved;
-	moved->ws = ws;
+	Bool to_current = client_should_be_visible(moved);
 
 	unsigned long desktop = moved->sticky ? 0xFFFFFFFFUL : (unsigned long)ws;
 	XChangeProperty(dpy, moved->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
 		        PropModeReplace, (unsigned char *)&desktop, 1);
 
-	if (from_ws >= 0 && from_ws < NUM_WORKSPACES && ws_focused[from_ws] == moved)
-		ws_focused[from_ws] = NULL;
+	if (from_ws >= 0 && from_ws < NUM_WORKSPACES) {
+		if (ws_focused[from_ws] == moved)
+			ws_focused[from_ws] = NULL;
+		if (workspace_states[from_ws].focused == moved)
+			workspace_states[from_ws].focused = NULL;
+	}
 	ws_focused[ws] = moved;
 
+	refresh_client_visibility();
 	if (to_current) {
-		if (!moved->mapped) {
-			XMapWindow(dpy, moved->win);
-			moved->mapped = True;
-		}
 		if (focus_target)
 			set_input_focus(moved, True, True);
 	}
@@ -2896,7 +2825,7 @@ void move_client_to_workspace(Client *moved, int ws, Bool focus_target)
 
 	if (from_current) {
 		tile();
-		if (was_focused || !focused || !client_is_visible(focused)) {
+		if (!client_is_visible(focused)) {
 			Client *next_focus = first_visible_client(current_ws, current_mon, NULL);
 			set_input_focus(next_focus, True, False);
 		}
@@ -3158,132 +3087,65 @@ void move_master_prev(void)
 	update_borders();
 }
 
-void move_next_mon(void)
+static void move_client_to_monitor(Client *c, int mon, Bool center, Bool warp)
 {
-	if (!focused || n_mons <= 1)
-		return; /* no focused window or only one monitor */
-
-	Client *moved = focused;
-	int old_mon = moved->mon;
-	int old_ws = moved->ws;
-	int target_mon = (focused->mon + 1) % n_mons;
-	int target_ws = mons[target_mon].view_ws;
-
-	if (!relink_client_to_workspace(moved, target_ws))
+	if (!c || !mons || mon < 0 || mon >= n_mons || c->mon == mon)
 		return;
 
-	/* update window's monitor assignment */
-	focused->mon = target_mon;
-	current_mon = target_mon;
-	sync_active_monitor_state();
+	int old_mon = c->mon;
+	int old_ws = c->ws;
+	Bool follow = (c == focused);
+	if (!relink_client_to_workspace(c, mons[mon].view_ws))
+		return;
+	c->mon = mon;
 
-	unsigned long desktop = focused->sticky ? 0xFFFFFFFFUL : (unsigned long)focused->ws;
-	XChangeProperty(dpy, focused->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
-	                PropModeReplace, (unsigned char *)&desktop, 1);
-	if (old_ws != focused->ws && old_ws >= 0 && old_ws < NUM_WORKSPACES && ws_focused[old_ws] == moved)
-		ws_focused[old_ws] = first_visible_client(old_ws, old_mon, moved);
-	ws_focused[focused->ws] = focused;
-	workspace_states[focused->ws].focused = focused;
-	if (old_ws != focused->ws && old_ws >= 0 && old_ws < NUM_WORKSPACES &&
-	    workspace_states[old_ws].focused == moved)
-		workspace_states[old_ws].focused = ws_focused[old_ws];
-
-	/* if window is floating, center it on the target monitor */
-	if (focused->floating) {
-		int mx = mons[target_mon].x, my = mons[target_mon].y;
-		int mw = mons[target_mon].w, mh = mons[target_mon].h;
-		int x = mx + (mw - focused->w) / 2;
-		int y = my + (mh - focused->h) / 2;
-
-		/* ensure window stays within monitor bounds */
-		if (x < mx)
-			x = mx;
-		if (y < my)
-			y = my;
-		if (x + focused->w > mx + mw)
-			x = mx + mw - focused->w;
-		if (y + focused->h > my + mh)
-			y = my + mh - focused->h;
-
-		focused->x = x;
-		focused->y = y;
-		XMoveWindow(dpy, focused->win, x, y);
+	if (old_ws != c->ws) {
+		Client *replacement = stack_visible_client(old_ws, old_mon, c);
+		if (ws_focused[old_ws] == c)
+			ws_focused[old_ws] = replacement;
+		if (workspace_states[old_ws].focused == c)
+			workspace_states[old_ws].focused = replacement;
 	}
 
-	/* retile to update layouts on both monitors */
+	unsigned long desktop = c->sticky ? 0xFFFFFFFFUL : (unsigned long)c->ws;
+	XChangeProperty(dpy, c->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
+	                PropModeReplace, (unsigned char *)&desktop, 1);
+
+	if (c->fullscreen) {
+		c->orig_x += mons[mon].x - mons[old_mon].x;
+		c->orig_y += mons[mon].y - mons[old_mon].y;
+		monitor_workarea(mon, &c->x, &c->y, &c->w, &c->h);
+		XMoveResizeWindow(dpy, c->win, c->x, c->y, (unsigned int)c->w, (unsigned int)c->h);
+	}
+	else if (center && c->floating) {
+		int x, y, w, h;
+		monitor_workarea(mon, &x, &y, &w, &h);
+		c->x = x + MAX(0, (w - c->w - 2 * user_config.border_width) / 2);
+		c->y = y + MAX(0, (h - c->h - 2 * user_config.border_width) / 2);
+		XMoveWindow(dpy, c->win, c->x, c->y);
+	}
+
 	refresh_client_visibility();
 	tile();
+	send_configure_notify(c, c->fullscreen ? 0 : user_config.border_width);
+	if (follow)
+		set_input_focus(c, True, warp);
+	else
+		update_borders();
 	update_net_client_list();
+	session_state_save();
+}
 
-	/* follow the window with cursor if enabled */
-	if (user_config.warp_cursor)
-		warp_cursor(focused);
-
-	update_borders();
+void move_next_mon(void)
+{
+	if (focused && n_mons > 1)
+		move_client_to_monitor(focused, (focused->mon + 1) % n_mons, True, True);
 }
 
 void move_prev_mon(void)
 {
-	if (!focused || n_mons <= 1)
-		return; /* no focused window or only one monitor */
-
-	Client *moved = focused;
-	int old_mon = moved->mon;
-	int old_ws = moved->ws;
-	int target_mon = (focused->mon - 1 + n_mons) % n_mons;
-	int target_ws = mons[target_mon].view_ws;
-
-	if (!relink_client_to_workspace(moved, target_ws))
-		return;
-
-	/* update window's monitor assignment */
-	focused->mon = target_mon;
-	current_mon = target_mon;
-	sync_active_monitor_state();
-
-	unsigned long desktop = focused->sticky ? 0xFFFFFFFFUL : (unsigned long)focused->ws;
-	XChangeProperty(dpy, focused->win, atoms[ATOM_NET_WM_DESKTOP], XA_CARDINAL, 32,
-	                PropModeReplace, (unsigned char *)&desktop, 1);
-	if (old_ws != focused->ws && old_ws >= 0 && old_ws < NUM_WORKSPACES && ws_focused[old_ws] == moved)
-		ws_focused[old_ws] = first_visible_client(old_ws, old_mon, moved);
-	ws_focused[focused->ws] = focused;
-	workspace_states[focused->ws].focused = focused;
-	if (old_ws != focused->ws && old_ws >= 0 && old_ws < NUM_WORKSPACES &&
-	    workspace_states[old_ws].focused == moved)
-		workspace_states[old_ws].focused = ws_focused[old_ws];
-
-	/* if window is floating, center it on the target monitor */
-	if (focused->floating) {
-		int mx = mons[target_mon].x, my = mons[target_mon].y;
-		int mw = mons[target_mon].w, mh = mons[target_mon].h;
-		int x = mx + (mw - focused->w) / 2;
-		int y = my + (mh - focused->h) / 2;
-
-		/* ensure window stays within monitor bounds */
-		if (x < mx)
-			x = mx;
-		if (y < my)
-			y = my;
-		if (x + focused->w > mx + mw)
-			x = mx + mw - focused->w;
-		if (y + focused->h > my + mh)
-			y = my + mh - focused->h;
-
-		focused->x = x;
-		focused->y = y;
-		XMoveWindow(dpy, focused->win, x, y);
-	}
-
-	/* retile to update layouts on both monitors */
-	refresh_client_visibility();
-	tile();
-	update_net_client_list();
-
-	/* follow the window with cursor if enabled */
-	if (user_config.warp_cursor)
-		warp_cursor(focused);
-
-	update_borders();
+	if (focused && n_mons > 1)
+		move_client_to_monitor(focused, (focused->mon - 1 + n_mons) % n_mons, True, True);
 }
 
 void move_to_workspace(int ws)
@@ -3652,7 +3514,6 @@ void run(void)
 	while (running) {
 		long timeout_ms = -1;
 		time_t now = time(NULL);
-		Bool handled_xevents = False;
 
 		if (!status_text_override_active() && user_config.status_interval_sec > 0) {
 			if (last_status_tick == 0)
@@ -3679,7 +3540,6 @@ void run(void)
 			while (running && XPending(dpy)) {
 				XNextEvent(dpy, &xev);
 				handle_xevent(&xev);
-				handled_xevents = True;
 			}
 		} else {
 			fd_set fds;
@@ -3721,7 +3581,6 @@ void run(void)
 						while (running && XPending(dpy)) {
 							XNextEvent(dpy, &xev);
 							handle_xevent(&xev);
-							handled_xevents = True;
 						}
 					}
 				}
@@ -3730,13 +3589,8 @@ void run(void)
 		if (!running)
 			break;
 
-		if (handled_xevents)
-			update_net_client_list();
-
-		if (!running)
-			break;
-
-		if (user_config.focus_follows_mouse && drag_mode == DRAG_NONE && !in_ws_switch) {
+		if (user_config.focus_follows_mouse && drag_mode == DRAG_NONE && !in_ws_switch &&
+		    suppress_pointer_focus_until_ms <= monotonic_ms()) {
 			Window root_ret, child_ret;
 			int root_x, root_y, win_x, win_y;
 			unsigned int mask;
@@ -3837,6 +3691,24 @@ void select_input(Window w, Mask masks)
 	XSelectInput(dpy, w, masks);
 }
 
+static Bool is_focus_timestamp(Display *display, XEvent *event, XPointer data)
+{
+	(void)display;
+	Atom property = *(Atom *)data;
+	return event->type == PropertyNotify && event->xproperty.window == wm_check_win &&
+	       event->xproperty.atom == property;
+}
+
+static Time focus_timestamp(void)
+{
+	Atom property = XInternAtom(dpy, "_CUPIDWM_FOCUS_TIMESTAMP", False);
+	XEvent event;
+	XSelectInput(dpy, wm_check_win, PropertyChangeMask);
+	XChangeProperty(dpy, wm_check_win, property, XA_INTEGER, 8, PropModeAppend, NULL, 0);
+	XIfEvent(dpy, &event, is_focus_timestamp, (XPointer)&property);
+	return event.xproperty.time;
+}
+
 void send_wm_take_focus(Window w)
 {
 	Atom wm_protocols = XInternAtom(dpy, "WM_PROTOCOLS", False);
@@ -3855,7 +3727,7 @@ void send_wm_take_focus(Window w)
 						.format = 32}
 				};
 				ev.xclient.data.l[0] = wm_take_focus;
-				ev.xclient.data.l[1] = CurrentTime;
+					ev.xclient.data.l[1] = (long)focus_timestamp();
 				XSendEvent(dpy, w, False, NoEventMask, &ev);
 			}
 		}
@@ -3941,22 +3813,23 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 	int prev_mon = current_mon;
 
 	if (c && client_is_visible(c)) {
-			focused = c;
-			current_mon = CLAMP(c->mon, 0, n_mons - 1);
-						suppress_pointer_focus_until_ms = monotonic_ms() + pointer_focus_suppress_duration_ms;
-			sync_active_monitor_state();
-			attachstack(c);
+		focused = c;
+		current_mon = CLAMP(c->mon, 0, n_mons - 1);
+		suppress_pointer_focus_until_ms = monotonic_ms() + pointer_focus_suppress_duration_ms;
+		sync_active_monitor_state();
+		attachstack(c);
 
-			/* update remembered focus */
-			if (c->ws >= 0 && c->ws < NUM_WORKSPACES) {
-				ws_focused[c->ws] = c;
-				workspace_states[c->ws].focused = c;
-			}
+		/* update remembered focus */
+		if (c->ws >= 0 && c->ws < NUM_WORKSPACES) {
+			ws_focused[c->ws] = c;
+			workspace_states[c->ws].focused = c;
+		}
 
 		Window w = find_toplevel(c->win);
 		Bool focus_changed = (prev_focused != w || current_ws != prev_ws || current_mon != prev_mon);
 
-		XSetInputFocus(dpy, w, RevertToPointerRoot, CurrentTime);
+		if (!c->neverfocus)
+			XSetInputFocus(dpy, w, RevertToPointerRoot, CurrentTime);
 		send_wm_take_focus(w);
 		if (raise_win) {
 			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_DEMANDS_ATTENTION], False);
@@ -3970,25 +3843,21 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 			}
 		}
 
-			if (raise_win) {
-				/* always raise in monocle, otherwise respect floating_on_top */
-				if (layouts[current_layout].mode == LayoutMonocle || monocle || c->floating || !user_config.floating_on_top)
-					XRaiseWindow(dpy, w);
-			}
-			if (focus_changed) {
-				publish_current_desktop();
-				/* EWMH focus hint */
-				XChangeProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW], XA_WINDOW, 32,
-						PropModeReplace, (unsigned char *)&w, 1);
-			}
-			restack_monitor(current_mon);
-			update_focused_ewmh_state(c);
-			window_set_ewmh_state(c->win, atoms[ATOM_NET_WM_STATE_FOCUSED], True);
-			if (focus_changed || raise_win)
-				update_net_client_list();
+		if (raise_win) {
+			/* always raise in monocle, otherwise respect floating_on_top */
+			if (layouts[current_layout].mode == LayoutMonocle || monocle || c->floating || !user_config.floating_on_top)
+				XRaiseWindow(dpy, w);
+		}
+		publish_current_desktop();
+		XChangeProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW], XA_WINDOW, 32,
+		                PropModeReplace, (unsigned char *)&w, 1);
+		restack_monitor(current_mon);
+		update_focused_ewmh_state(c);
+		if (focus_changed || raise_win)
+			update_net_client_list();
 
-			if (focus_changed)
-				update_borders();
+		if (focus_changed)
+			update_borders();
 
 		if (warp && user_config.warp_cursor)
 			warp_cursor(c);
@@ -3997,18 +3866,19 @@ void set_input_focus(Client *c, Bool raise_win, Bool warp)
 		/* no client */
 		Bool focus_changed = (prev_focused != None || current_ws != prev_ws || current_mon != prev_mon);
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
-		if (focus_changed)
-			XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
+		XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
+		publish_current_desktop();
 
 		focused = NULL;
-		ws_focused[current_ws] = NULL;
+		if (ws_focused[current_ws] && ws_focused[current_ws]->mon == current_mon)
+			ws_focused[current_ws] = NULL;
 		suppress_pointer_focus_until_ms = monotonic_ms() + pointer_focus_suppress_duration_ms;
-		workspace_states[current_ws].focused = NULL;
+		if (workspace_states[current_ws].focused && workspace_states[current_ws].focused->mon == current_mon)
+			workspace_states[current_ws].focused = NULL;
 		update_focused_ewmh_state(NULL);
 		if (focus_changed)
 			update_net_client_list();
-		if (focus_changed)
-			update_borders();
+		update_borders();
 	}
 
 	Window now_focused = focused ? focused->win : None;
@@ -4455,20 +4325,10 @@ void update_mons(void)
 		fputs("cupidwm: failed to allocate monitors\n", stderr);
 		exit(EXIT_FAILURE);
 	}
-	Bool used_workspaces[NUM_WORKSPACES] = {False};
 	for (int i = 0; i < n_mons; i++) {
 		mons[i] = discovered[i];
 		int desired_ws = (old && i < old_n) ? old[i].view_ws : (i % NUM_WORKSPACES);
 		desired_ws = CLAMP(desired_ws, 0, NUM_WORKSPACES - 1);
-		if (used_workspaces[desired_ws]) {
-			for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
-				if (!used_workspaces[ws]) {
-					desired_ws = ws;
-					break;
-				}
-			}
-		}
-		used_workspaces[desired_ws] = True;
 		mons[i].view_ws = desired_ws;
 		mons[i].prev_view_ws = (old && i < old_n) ? CLAMP(old[i].prev_view_ws, 0, NUM_WORKSPACES - 1) : desired_ws;
 	}

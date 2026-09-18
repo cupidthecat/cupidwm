@@ -39,6 +39,36 @@ static Bool client_list_contains(Client *const *clients, int n, Client *target)
 	return False;
 }
 
+static Bool window_property_windows_equal(Window w, Atom property, const Window *values, int n_values)
+{
+	Atom actual_type = None;
+	int actual_format = 0;
+	unsigned long n_items = 0;
+	unsigned long bytes_after = 0;
+	unsigned char *data = NULL;
+	Bool equal = False;
+	long read_items = n_values > 0 ? n_values : 1;
+
+	if (XGetWindowProperty(dpy, w, property, 0, read_items, False, XA_WINDOW,
+			       &actual_type, &actual_format, &n_items, &bytes_after,
+			       &data) == Success &&
+	    actual_type == XA_WINDOW && actual_format == 32 &&
+	    n_items == (unsigned long)n_values && bytes_after == 0) {
+		equal = True;
+		Window *current = (Window *)data;
+		for (int i = 0; i < n_values; i++) {
+			if (current[i] != values[i]) {
+				equal = False;
+				break;
+			}
+		}
+	}
+
+	if (data)
+		XFree(data);
+	return equal;
+}
+
 Bool window_is_dock(Window w)
 {
 	Atom actual_type = None;
@@ -207,10 +237,12 @@ void update_net_client_list(void)
 		stacking_list[n_stacking++] = clients[i]->win;
 	}
 
-	XChangeProperty(dpy, root, atoms[ATOM_NET_CLIENT_LIST], XA_WINDOW, 32, PropModeReplace,
-	                (unsigned char *)map_list, n_clients);
-	XChangeProperty(dpy, root, atoms[ATOM_NET_CLIENT_LIST_STACKING], XA_WINDOW, 32, PropModeReplace,
-	                (unsigned char *)stacking_list, n_stacking);
+	if (!window_property_windows_equal(root, atoms[ATOM_NET_CLIENT_LIST], map_list, n_clients))
+		XChangeProperty(dpy, root, atoms[ATOM_NET_CLIENT_LIST], XA_WINDOW, 32, PropModeReplace,
+				(unsigned char *)map_list, n_clients);
+	if (!window_property_windows_equal(root, atoms[ATOM_NET_CLIENT_LIST_STACKING], stacking_list, n_stacking))
+		XChangeProperty(dpy, root, atoms[ATOM_NET_CLIENT_LIST_STACKING], XA_WINDOW, 32, PropModeReplace,
+				(unsigned char *)stacking_list, n_stacking);
 }
 
 static void apply_window_strut(Window w, int screen_w, int screen_h, Bool *any_strut)
@@ -442,6 +474,18 @@ void window_set_ewmh_state(Window w, Atom state, Bool add)
 		XFree(found_atoms);
 		found_atoms = NULL;
 		n_atoms = 0;
+	}
+	else if (found_atoms) {
+		unsigned long state_count = 0;
+		for (unsigned long i = 0; i < n_atoms; i++) {
+			if (found_atoms[i] == state)
+				state_count++;
+		}
+
+		if ((add && state_count == 1) || (!add && state_count == 0)) {
+			XFree(found_atoms);
+			return;
+		}
 	}
 
 	/* Rebuild property list without duplicates, optionally re-adding target state. */

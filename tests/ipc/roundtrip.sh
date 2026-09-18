@@ -23,7 +23,7 @@ need_cmd() {
 
 [ -n "$HOST_DISPLAY" ] || fail "host DISPLAY is not set"
 
-for cmd in Xephyr xdpyinfo xprop mktemp grep sed touch; do
+for cmd in Xephyr xdpyinfo xprop mktemp grep sed touch timeout; do
 	need_cmd "$cmd"
 done
 
@@ -46,7 +46,7 @@ trap cleanup EXIT INT TERM
 choose_test_display() {
 	local num="$DISPLAY_NUM"
 	for _ in $(seq 1 40); do
-		if [ ! -e "/tmp/.X${num}-lock" ] && ! DISPLAY=":${num}" xdpyinfo >/dev/null 2>&1; then
+		if [ ! -e "/tmp/.X${num}-lock" ] && ! DISPLAY=":${num}" timeout 1s xdpyinfo >/dev/null 2>&1; then
 			TEST_DISPLAY=":${num}"
 			export DISPLAY="$TEST_DISPLAY"
 			return 0
@@ -58,7 +58,7 @@ choose_test_display() {
 
 wait_display() {
 	for _ in $(seq 1 100); do
-		if xdpyinfo >/dev/null 2>&1; then
+		if timeout 2s xdpyinfo >/dev/null 2>&1; then
 			return 0
 		fi
 		if [ -n "$xephyr_pid" ] && ! kill -0 "$xephyr_pid" 2>/dev/null; then

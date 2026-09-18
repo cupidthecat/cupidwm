@@ -26,7 +26,7 @@ debug: clean cupidwm
 build:
 	mkdir -p build
 
-build/cupidwm.o: src/cupidwm.c config.h config.mk src/defs.h | build
+build/cupidwm.o: $(wildcard src/*.c) config.h config.mk src/defs.h | build
 	${CC} -c ${CFLAGS} src/cupidwm.c -o build/cupidwm.o
 
 config.h:
@@ -46,6 +46,8 @@ preflight-test-scripts:
 	@test -f ./scripts/install-deps.sh || { echo "missing required script: ./scripts/install-deps.sh"; exit 1; }
 	@test -f ./tests/ewmh/invariants.sh || { echo "missing required script: ./tests/ewmh/invariants.sh"; exit 1; }
 	@test -f ./tests/ewmh/send-client-message.c || { echo "missing required file: ./tests/ewmh/send-client-message.c"; exit 1; }
+	@test -f ./tests/ewmh/protocols.sh || { echo "missing required script: ./tests/ewmh/protocols.sh"; exit 1; }
+	@test -f ./tests/input/monitors.sh || { echo "missing required script: ./tests/input/monitors.sh"; exit 1; }
 	@test -f ./tests/ipc/roundtrip.sh || { echo "missing required script: ./tests/ipc/roundtrip.sh"; exit 1; }
 	@test -f ./tests/packaging/sanity.sh || { echo "missing required script: ./tests/packaging/sanity.sh"; exit 1; }
 
@@ -55,13 +57,19 @@ test-smoke: preflight-test-scripts cupidwm
 test-ewmh: preflight-test-scripts cupidwm
 	bash ./tests/ewmh/invariants.sh ./cupidwm
 
+test-protocols: preflight-test-scripts cupidwm
+	CC="${CC}" bash ./tests/ewmh/protocols.sh ./cupidwm
+
+test-input: preflight-test-scripts cupidwm
+	CC="${CC}" timeout 90s bash ./tests/input/monitors.sh ./cupidwm
+
 test-ipc: preflight-test-scripts cupidwm cupidwmctl
 	bash ./tests/ipc/roundtrip.sh ./cupidwm ./cupidwmctl
 
 test-packaging: preflight-test-scripts
 	bash ./tests/packaging/sanity.sh
 
-test: test-packaging test-smoke test-ewmh
+test: test-packaging test-smoke test-ewmh test-protocols test-input
 
 lint:
 	@if command -v cppcheck >/dev/null 2>&1; then \
@@ -89,7 +97,9 @@ check: debug lint test-packaging
 		command -v xterm >/dev/null 2>&1 && \
 		command -v xwininfo >/dev/null 2>&1; then \
 		${MAKE} --no-print-directory test-smoke && \
-		${MAKE} --no-print-directory test-ewmh; \
+			${MAKE} --no-print-directory test-ewmh && \
+			${MAKE} --no-print-directory test-protocols && \
+			${MAKE} --no-print-directory test-input; \
 	elif [ -z "$$DISPLAY" ] && \
 		command -v xvfb-run >/dev/null 2>&1 && \
 		command -v Xephyr >/dev/null 2>&1 && \
@@ -100,7 +110,9 @@ check: debug lint test-packaging
 		command -v xwininfo >/dev/null 2>&1; then \
 		echo "DISPLAY not set; running integration suites under xvfb-run"; \
 		xvfb-run -a ${MAKE} --no-print-directory test-smoke && \
-		xvfb-run -a ${MAKE} --no-print-directory test-ewmh; \
+			xvfb-run -a ${MAKE} --no-print-directory test-ewmh && \
+			xvfb-run -a ${MAKE} --no-print-directory test-protocols && \
+			xvfb-run -a ${MAKE} --no-print-directory test-input; \
 	else \
 		echo "Smoke test skipped (missing DISPLAY or Xephyr/x11 test dependencies)"; \
 	fi
@@ -171,4 +183,4 @@ uninstall:
 uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
-.PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-ipc test-packaging preflight-test-scripts
+.PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts

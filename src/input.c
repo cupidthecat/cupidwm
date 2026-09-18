@@ -23,39 +23,17 @@ static void activate_monitor(int mon)
 	if (mon == current_mon)
 		return;
 
-	Window prev_focused = focused ? focused->win : None;
-	int prev_ws = current_ws;
-	int prev_mon = current_mon;
-
 	current_mon = mon;
 	sync_active_monitor_state();
 
 	Client *target = workspace_states[current_ws].focused;
-	if (!target || !client_is_visible_on_monitor(target, current_mon))
+	if (!client_is_visible(target) || target->mon != current_mon)
 		target = ws_focused[current_ws];
-	if (!target || !client_is_visible_on_monitor(target, current_mon))
+	if (!client_is_visible(target) || target->mon != current_mon)
 		target = stack_visible_client(current_ws, current_mon, NULL);
 
-	if (target) {
-		set_input_focus(target, True, False);
-		return;
-	}
-
-	focused = NULL;
-	XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
-	XDeleteProperty(dpy, root, atoms[ATOM_NET_ACTIVE_WINDOW]);
-	publish_current_desktop();
-	update_focused_ewmh_state(NULL);
-	update_net_client_list();
-	update_borders();
+	set_input_focus(target, True, False);
 	XFlush(dpy);
-
-	if (prev_focused != None || current_ws != prev_ws || current_mon != prev_mon) {
-		char details[192];
-		snprintf(details, sizeof(details), "focused=0x0 workspace=%d monitor=%d",
-		         current_ws + 1, current_mon);
-		ipc_notify_event("focus", details);
-	}
 }
 
 void hdl_button(XEvent *xev)
@@ -65,10 +43,7 @@ void hdl_button(XEvent *xev)
 		if (xbutton->window != mons[m].barwin)
 			continue;
 
-		if (m != current_mon) {
-			current_mon = m;
-			sync_active_monitor_state();
-		}
+		activate_monitor(m);
 
 		int bar_ws = mons[m].view_ws;
 		unsigned int click = ClkWinTitle;
@@ -222,11 +197,17 @@ void hdl_button(XEvent *xev)
 	Mask left_click = Button1;
 	Mask right_click = Button3;
 
-	XAllowEvents(dpy, ReplayPointer, xbutton->time);
-	if (!w)
-		return;
-
 	Client *c = find_client(w);
+	Bool wm_drag = (xbutton->state & user_config.modkey) &&
+	               (xbutton->button == left_click || xbutton->button == right_click);
+	if (!wm_drag) {
+		if (client_is_visible(c) && xbutton->button == left_click)
+			set_input_focus(c, True, False);
+		XAllowEvents(dpy, ReplayPointer, xbutton->time);
+		return;
+	}
+	/* A WM drag consumes the press and release as one gesture. */
+	XAllowEvents(dpy, AsyncPointer, xbutton->time);
 	if (c && client_is_visible(c)) {
 
 		Bool is_swap_mode =
@@ -250,8 +231,7 @@ void hdl_button(XEvent *xev)
 				swap_target = NULL;
 				return;
 			}
-			focused = c;
-			set_input_focus(focused, False, False);
+			set_input_focus(c, False, False);
 			XSetWindowBorder(dpy, c->win, user_config.border_swap_col);
 			return;
 		}
@@ -261,17 +241,8 @@ void hdl_button(XEvent *xev)
 			(xbutton->button == left_click ||
 			 xbutton->button == right_click) && !c->floating;
 		if (is_move_resize) {
-			focused = c;
+			set_input_focus(c, True, False);
 			toggle_floating();
-		}
-
-		Bool is_single_click = 
-			!(xbutton->state & user_config.modkey) &&
-			xbutton->button == left_click;
-		if (is_single_click) {
-			focused = c;
-			set_input_focus(focused, True, False);
-			return;
 		}
 
 		if (!c->floating)
@@ -294,9 +265,7 @@ void hdl_button(XEvent *xev)
 		drag_orig_w = c->w;
 		drag_orig_h = c->h;
 		drag_mode = (xbutton->button == left_click) ? DRAG_MOVE : DRAG_RESIZE;
-		focused = c;
-
-		set_input_focus(focused, True, False);
+		set_input_focus(c, True, False);
 		return;
 	}
 
@@ -324,9 +293,15 @@ void hdl_button_release(XEvent *xev)
 
 	XUngrabPointer(dpy, CurrentTime);
 
+	Client *moved = drag_client;
+	Bool moved_geometry = (drag_mode == DRAG_MOVE || drag_mode == DRAG_RESIZE);
 	drag_mode = DRAG_NONE;
 	drag_client = NULL;
 	swap_target = NULL;
+	if (moved_geometry && moved) {
+		move_client_to_monitor(moved, get_monitor_for(moved), False, False);
+		send_configure_notify(moved, moved->fullscreen ? 0 : user_config.border_width);
+	}
 }
 
 static void cancel_drag(void)
@@ -384,8 +359,11 @@ static void sync_urgency_from_wm_hints(Client *c)
 		return;
 
 	XWMHints *hints = XGetWMHints(dpy, c->win);
-	if (!hints)
+	if (!hints) {
+		c->neverfocus = False;
 		return;
+	}
+	c->neverfocus = (hints->flags & InputHint) && !hints->input;
 
 	Bool urgent = (hints->flags & XUrgencyHint) ? True : False;
 	if (c == focused && urgent) {
@@ -900,6 +878,10 @@ void hdl_config_ntf(XEvent *xev)
 		tile();
 		update_borders();
 	}
+	else if (!xev->xconfigure.send_event && find_client(xev->xconfigure.window)) {
+		/* Actual geometry/stack changes can come from client requests or state hints. */
+		update_net_client_list();
+	}
 }
 
 void hdl_config_req(XEvent *xev)
@@ -1031,6 +1013,8 @@ void hdl_focus_in(XEvent *xev)
 	XFocusChangeEvent *focus_ev = &xev->xfocus;
 	Window focused_top;
 	Window event_top;
+	if (focus_ev->mode != NotifyNormal)
+		return;
 
 	if (!focused || !client_is_visible(focused)) {
 		set_input_focus(NULL, False, False);
@@ -1044,6 +1028,10 @@ void hdl_focus_in(XEvent *xev)
 		return;
 
 	if (event_top == focused_top)
+		return;
+	/* Menus and other override-redirect windows may own focus temporarily. */
+	XWindowAttributes wa;
+	if (XGetWindowAttributes(dpy, event_top, &wa) && wa.override_redirect)
 		return;
 
 	set_input_focus(focused, False, False);
@@ -1090,9 +1078,11 @@ void hdl_destroy_ntf(XEvent *xev)
 			}
 		}
 
-			for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
-				if (ws_focused[ws] == c)
-					ws_focused[ws] = NULL;
+				for (int ws = 0; ws < NUM_WORKSPACES; ws++) {
+					if (ws_focused[ws] == c)
+						ws_focused[ws] = NULL;
+					if (workspace_states[ws].focused == c)
+						workspace_states[ws].focused = NULL;
 			}
 
 			if (focused == c)
@@ -1120,10 +1110,8 @@ void hdl_destroy_ntf(XEvent *xev)
 
 				Client *foc_new = stack_visible_client(i, removed_mon, NULL);
 
-				if (foc_new)
-					set_input_focus(foc_new, True, True);
-				else
-					set_input_focus(NULL, False, False);
+					if (removed_mon == current_mon && !client_is_visible(focused))
+						set_input_focus(foc_new, True, False);
 			}
 
 		return;
@@ -1181,8 +1169,7 @@ void hdl_map_req(XEvent *xev)
 					c->mapped = True;
 				XMapWindow(dpy, w);
 				if (user_config.new_win_focus && !c->no_focus_on_map) {
-					focused = c;
-					set_input_focus(c, True, True);
+				set_input_focus(c, True, True);
 				return; /* set_input_focus already calls update_borders */
 			}
 				if (c->no_focus_on_map) {
@@ -1382,12 +1369,8 @@ void hdl_map_req(XEvent *xev)
 	}
 	set_frame_extents(w);
 	set_allowed_actions(w);
-	if (!c->hidden && (c->no_focus_on_map || !user_config.new_win_focus))
-		send_wm_take_focus(c->win);
-
 	if (user_config.new_win_focus && !c->hidden && !c->no_focus_on_map) {
-		focused = c;
-		set_input_focus(focused, True, True);
+		set_input_focus(c, True, True);
 		return;
 	}
 	if (c->no_focus_on_map) {
@@ -1553,20 +1536,8 @@ void hdl_property_ntf(XEvent *xev)
 	XPropertyEvent *property_ev = &xev->xproperty;
 
 	if (property_ev->window == root) {
-		if (property_ev->atom == atoms[ATOM_NET_CURRENT_DESKTOP]) {
-			long *val = NULL;
-			Atom actual;
-			int fmt;
-			unsigned long n;
-			unsigned long after;
-			if (XGetWindowProperty(dpy, root, atoms[ATOM_NET_CURRENT_DESKTOP], 0, 1, False, XA_CARDINAL, &actual,
-					       &fmt, &n, &after, (unsigned char **)&val) == Success && val) {
-				if (actual == XA_CARDINAL && fmt == 32 && n >= 1)
-					change_workspace((int)val[0]);
-				XFree(val);
-			}
-		}
-		else if (property_ev->atom == XA_WM_NAME || property_ev->atom == atoms[ATOM_NET_WM_NAME]) {
+		/* Desktop requests arrive as ClientMessage; these are our own exports. */
+		if (property_ev->atom == XA_WM_NAME || property_ev->atom == atoms[ATOM_NET_WM_NAME]) {
 			updatestatus();
 			drawbars();
 		}
