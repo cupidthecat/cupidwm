@@ -198,3 +198,11 @@ test-parallel-build:
 	CC="${CC}" python3 tests/packaging/parallel-build.py
 
 .PHONY: test-parallel-build
+# This fixture includes the WM translation unit to check internal ownership.
+build/test-scratchpads: tests/lifetime/scratchpads.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/lifetime/scratchpads.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-lifetime: build/test-scratchpads
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-scratchpads
+
+.PHONY: test-lifetime
