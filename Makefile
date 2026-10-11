@@ -91,7 +91,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging test-cli test-process test-fd-bounds
+check: debug lint test-packaging test-cli test-process test-fd-bounds test-control-input
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -235,3 +235,11 @@ test-fd-bounds: build/test-fd-bounds
 	ASAN_OPTIONS=detect_leaks=0 ./build/test-fd-bounds
 
 .PHONY: test-fd-bounds
+
+build/test-control-input: tests/ipc/control-input.c tools/cupidwmctl.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/ipc/control-input.c ${EXTRA_LDFLAGS}
+
+test-control-input: build/test-control-input
+	./build/test-control-input
+
+.PHONY: test-control-input
