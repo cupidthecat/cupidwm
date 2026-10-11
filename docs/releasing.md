@@ -40,3 +40,9 @@ Run ecosystem/packaging sanity checks before publishing:
 ```sh
 make test-packaging
 ```
+
+## Parallel builds
+
+`make -j release`, `make -j strict`, and `make -j debug` finish cleanup before
+building their binaries. `make test-parallel-build` checks fresh builds and
+rebuilds with parallel jobs enabled.

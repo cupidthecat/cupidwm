@@ -12,6 +12,9 @@ SAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
 
 all: release
 
+# Clean must finish before make considers existing build outputs.
+.NOTPARALLEL: release strict debug check
+
 release: clean cupidwm cupidwmctl
 
 strict: EXTRA_CFLAGS += -O0 -g3 ${SAN_FLAGS}
@@ -66,7 +69,7 @@ test-input: preflight-test-scripts cupidwm
 test-ipc: preflight-test-scripts cupidwm cupidwmctl
 	bash ./tests/ipc/roundtrip.sh ./cupidwm ./cupidwmctl
 
-test-packaging: preflight-test-scripts test-distcheck
+test-packaging: preflight-test-scripts test-distcheck test-parallel-build
 	bash ./tests/packaging/sanity.sh
 
 test: test-packaging test-smoke test-ewmh test-protocols test-input
@@ -190,3 +193,8 @@ test-distcheck:
 	python3 tests/packaging/distcheck.py
 
 .PHONY: test-distcheck
+
+test-parallel-build:
+	CC="${CC}" python3 tests/packaging/parallel-build.py
+
+.PHONY: test-parallel-build
