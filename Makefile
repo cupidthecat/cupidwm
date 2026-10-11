@@ -69,7 +69,7 @@ test-ipc: preflight-test-scripts cupidwm cupidwmctl
 test-packaging: preflight-test-scripts
 	bash ./tests/packaging/sanity.sh
 
-test: test-packaging test-smoke test-ewmh test-protocols test-input
+test: test-process test-packaging test-smoke test-ewmh test-protocols test-input
 
 lint:
 	@if command -v cppcheck >/dev/null 2>&1; then \
@@ -88,7 +88,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging
+check: debug lint test-packaging test-process
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -184,3 +184,11 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+build/test-process-parent: tests/process/parent.c src/proc.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/process/parent.c ${EXTRA_LDFLAGS}
+
+test-process: build/test-process-parent
+	./build/test-process-parent
+
+.PHONY: test-process
