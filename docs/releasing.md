@@ -18,7 +18,12 @@ This generates:
 make distcheck
 ```
 
-`distcheck` confirms key sources/docs/licenses/tests are present in the tarball.
+`distcheck` fails if extraction fails or a required source, document, license, or
+test file is missing. Its temporary extraction directory is removed on success
+and failure.
+
+Run `make test-distcheck` to test the validator against complete, corrupt, and
+incomplete archives.
 
 ## Packaging Notes
 

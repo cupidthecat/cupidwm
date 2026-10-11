@@ -66,7 +66,7 @@ test-input: preflight-test-scripts cupidwm
 test-ipc: preflight-test-scripts cupidwm cupidwmctl
 	bash ./tests/ipc/roundtrip.sh ./cupidwm ./cupidwmctl
 
-test-packaging: preflight-test-scripts
+test-packaging: preflight-test-scripts test-distcheck
 	bash ./tests/packaging/sanity.sh
 
 test: test-packaging test-smoke test-ewmh test-protocols test-input
@@ -131,7 +131,9 @@ dist: clean
 	rm -rf cupidwm-${VERSION}
 
 distcheck: dist
-	@tmpdir=$$(mktemp -d); \
+	@set -eu; \
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	tar -xf cupidwm-${VERSION}.tar.gz -C "$$tmpdir"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/Makefile"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/README.md"; \
@@ -149,7 +151,6 @@ distcheck: dist
 	test -f "$$tmpdir/cupidwm-${VERSION}/packaging/arch/PKGBUILD"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/tests/ipc/roundtrip.sh"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/tools/cupidwmctl.c"; \
-	rm -rf "$$tmpdir"; \
 	echo "distcheck passed"
 
 install: all
@@ -184,3 +185,8 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+test-distcheck:
+	python3 tests/packaging/distcheck.py
+
+.PHONY: test-distcheck
