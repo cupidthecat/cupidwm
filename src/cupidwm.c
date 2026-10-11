@@ -3741,6 +3741,12 @@ void setup(void)
 		fprintf(stderr, "can't open display.\nquitting...");
 		exit(EXIT_FAILURE);
 	}
+	if (ConnectionNumber(dpy) >= FD_SETSIZE) {
+		fprintf(stderr, "cupidwm: X11 descriptor exceeds select capacity\n");
+		XCloseDisplay(dpy);
+		dpy = NULL;
+		exit(EXIT_FAILURE);
+	}
 	root = XDefaultRootWindow(dpy);
 
 	workspace_names_init_defaults();

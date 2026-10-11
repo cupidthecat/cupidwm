@@ -350,6 +350,11 @@ static Bool run_external_status_command(char *dest, size_t destsz)
 	int pipefds[2];
 	if (pipe(pipefds) < 0)
 		return False;
+	if (pipefds[0] >= FD_SETSIZE) {
+		close(pipefds[0]);
+		close(pipefds[1]);
+		return False;
+	}
 
 	pid_t pid = fork();
 	if (pid < 0) {
@@ -714,6 +719,12 @@ void status_fifo_setup(void)
 	status_fifo_reader_fd = open(fifo_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 	if (status_fifo_reader_fd < 0)
 		return;
+	if (status_fifo_reader_fd >= FD_SETSIZE) {
+		close(status_fifo_reader_fd);
+		status_fifo_reader_fd = -1;
+		status_fifo_writer_fd = -1;
+		return;
+	}
 
 	status_fifo_writer_fd = open(fifo_path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
 }

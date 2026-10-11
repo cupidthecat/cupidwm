@@ -88,7 +88,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging
+check: debug lint test-packaging test-fd-bounds
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -184,3 +184,11 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+build/test-fd-bounds: tests/ipc/fd-bounds.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/ipc/fd-bounds.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-fd-bounds: build/test-fd-bounds
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-fd-bounds
+
+.PHONY: test-fd-bounds
