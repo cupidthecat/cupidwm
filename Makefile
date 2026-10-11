@@ -88,7 +88,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging
+check: debug lint test-packaging test-control-input
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -184,3 +184,12 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+
+build/test-control-input: tests/ipc/control-input.c tools/cupidwmctl.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/ipc/control-input.c ${EXTRA_LDFLAGS}
+
+test-control-input: build/test-control-input
+	./build/test-control-input
+
+.PHONY: test-control-input

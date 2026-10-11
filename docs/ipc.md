@@ -80,6 +80,12 @@ Specify a custom socket path:
 cupidwmctl -s /path/to/cupidwm.sock status
 ```
 
+The CLI rejects commands longer than 510 bytes, or 505 bytes with `--json`.
+These limits include spaces between arguments and leave room for the protocol
+prefix, newline, and string terminator in the server's command buffer. Arguments
+containing carriage returns or newlines are rejected before connecting. Commands
+are never shortened to fit.
+
 ## Command Surface
 
 Core commands:
