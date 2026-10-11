@@ -114,6 +114,11 @@ Optional external provider (disabled by default):
 
 When enabled, the external command runs inside a short-lived helper process that is killed after around 200 ms if no newline-terminated line arrives; only the first line is consumed and the helper is stopped, so the command must finish quickly. When you need more flexible updates (e.g., long-running scripts or frequent pushes) prefer the FIFO push model via `CUPIDWM_BAR_FIFO`, which does not block the window manager when delivering status text.
 
+FIFO updates are newline-delimited. Each line may contain up to 1,023 bytes
+before the newline. Oversized lines and lines containing NUL bytes are discarded
+through their newline; the next valid line is processed normally. A standalone
+`clear` or `reset` line restores the internal status provider.
+
 ## IPC Options
 
 Optional UNIX socket IPC (disabled by default):
