@@ -184,3 +184,12 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+# This fixture includes the WM translation unit to check internal ownership.
+build/test-scratchpads: tests/lifetime/scratchpads.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/lifetime/scratchpads.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-lifetime: build/test-scratchpads
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-scratchpads
+
+.PHONY: test-lifetime

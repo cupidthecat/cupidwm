@@ -1910,14 +1910,6 @@ void close_focused(void)
 	if (!focused)
 		return;
 
-	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
-		if (scratchpads[i].client == focused) {
-			scratchpads[i].client = NULL;
-			scratchpads[i].enabled = False;
-			break;
-		}
-	}
-
 	Atom *protocols;
 	int n_protocols;
 	/* get number of protocols a window possesses and check if any == WM_DELETE_WINDOW (supports it) */
