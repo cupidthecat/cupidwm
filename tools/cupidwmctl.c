@@ -190,6 +190,26 @@ static int set_recv_timeout(int fd, int timeout_ms)
 	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
+static int stream_events(int fd)
+{
+	char buf[4096];
+	for (;;) {
+		ssize_t n = read(fd, buf, sizeof(buf));
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			perror("cupidwmctl: read");
+			return 1;
+		}
+		if (n == 0)
+			return 0;
+		if (fwrite(buf, 1, (size_t)n, stdout) != (size_t)n || fflush(stdout) == EOF) {
+			perror("cupidwmctl: stdout");
+			return 1;
+		}
+	}
+}
+
 int main(int argc, char **argv)
 {
 	const char *socket_path = NULL;
@@ -308,6 +328,12 @@ int main(int argc, char **argv)
 		sent += (size_t)w;
 	}
 
+	if (stream_mode) {
+		int result = stream_events(fd);
+		close(fd);
+		return result;
+	}
+
 	char buf[32768];
 	size_t used = 0;
 	for (;;) {
@@ -338,8 +364,6 @@ int main(int argc, char **argv)
 
 	close(fd);
 
-	if (stream_mode)
-		return 0;
 	if (want_json) {
 		if (strstr(buf, "\"ok\":true"))
 			return 0;
