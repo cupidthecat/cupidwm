@@ -184,3 +184,11 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+build/test-workspace-floating: tests/layout/workspace-floating.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/layout/workspace-floating.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-workspace-floating: build/test-workspace-floating
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-workspace-floating
+
+.PHONY: test-workspace-floating
