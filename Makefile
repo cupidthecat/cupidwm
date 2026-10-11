@@ -72,7 +72,7 @@ test-ipc: preflight-test-scripts cupidwm cupidwmctl
 test-packaging: preflight-test-scripts test-distcheck test-parallel-build
 	bash ./tests/packaging/sanity.sh
 
-test: test-packaging test-smoke test-ewmh test-protocols test-input
+test: test-cli test-packaging test-smoke test-ewmh test-protocols test-input
 
 lint:
 	@if command -v cppcheck >/dev/null 2>&1; then \
@@ -91,7 +91,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging
+check: debug lint test-packaging test-cli
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -213,3 +213,11 @@ test-ipc-disconnected: build/test-ipc-disconnected
 	ASAN_OPTIONS=detect_leaks=0 ./build/test-ipc-disconnected
 
 .PHONY: test-ipc-disconnected
+# Pipe-backed CLI tests do not need X11 or an IPC-enabled build.
+build/test-cli-transport: tests/cli/transport.c tools/cupidwmctl.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/cli/transport.c ${EXTRA_LDFLAGS}
+
+test-cli: build/test-cli-transport
+	python3 tests/cli/streaming.py ./build/test-cli-transport
+
+.PHONY: test-cli

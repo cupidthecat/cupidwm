@@ -141,6 +141,9 @@ cupidwmctl subscribe
 cupidwmctl --json subscribe
 ```
 
+The client flushes each received chunk to stdout and keeps reading until the
+server closes the connection. Subscriptions have no cumulative output-size limit.
+
 Current event names include:
 
 - `focus`
