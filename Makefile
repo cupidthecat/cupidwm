@@ -88,7 +88,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging
+check: debug lint test-packaging test-master-order
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -184,3 +184,11 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+build/test-master-order: tests/layout/master-order.c src/master.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/layout/master-order.c ${EXTRA_LDFLAGS}
+
+test-master-order: build/test-master-order
+	./build/test-master-order
+
+.PHONY: test-master-order
