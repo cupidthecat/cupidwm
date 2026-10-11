@@ -206,3 +206,10 @@ test-lifetime: build/test-scratchpads
 	ASAN_OPTIONS=detect_leaks=0 ./build/test-scratchpads
 
 .PHONY: test-lifetime
+build/test-ipc-disconnected: tests/ipc/disconnected.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/ipc/disconnected.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-ipc-disconnected: build/test-ipc-disconnected
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-ipc-disconnected
+
+.PHONY: test-ipc-disconnected
