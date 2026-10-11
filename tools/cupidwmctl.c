@@ -190,6 +190,26 @@ static int set_recv_timeout(int fd, int timeout_ms)
 	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
+static int stream_events(int fd)
+{
+	char buf[4096];
+	for (;;) {
+		ssize_t n = read(fd, buf, sizeof(buf));
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			perror("cupidwmctl: read");
+			return 1;
+		}
+		if (n == 0)
+			return 0;
+		if (fwrite(buf, 1, (size_t)n, stdout) != (size_t)n || fflush(stdout) == EOF) {
+			perror("cupidwmctl: stdout");
+			return 1;
+		}
+	}
+}
+
 int main(int argc, char **argv)
 {
 	const char *socket_path = NULL;
@@ -252,24 +272,27 @@ int main(int argc, char **argv)
 		socket_path = default_sock;
 	}
 
+	/* The server's 512-byte buffer also holds the newline and terminator. */
 	char cmd[512] = {0};
+	size_t used_cmd = 0;
+	size_t command_limit = sizeof(cmd) - 2 - (want_json ? 5 : 0);
 	for (int i = cmd_start; i < argc; i++) {
-		size_t used = strlen(cmd);
-		if (used >= sizeof(cmd) - 1)
-			break;
-
-		if (i > cmd_start) {
-			size_t rem = sizeof(cmd) - used - 1;
-			if (rem == 0)
-				break;
-			strncat(cmd, " ", rem);
+		size_t arglen = strlen(argv[i]);
+		size_t separator = i > cmd_start ? 1 : 0;
+		if (strchr(argv[i], '\n') || strchr(argv[i], '\r')) {
+			fprintf(stderr, "cupidwmctl: command arguments must not contain line breaks\n");
+			return 1;
 		}
-
-		used = strlen(cmd);
-		if (used >= sizeof(cmd) - 1)
-			break;
-		size_t rem = sizeof(cmd) - used - 1;
-		strncat(cmd, argv[i], rem);
+		if (separator > command_limit - used_cmd ||
+		    arglen > command_limit - used_cmd - separator) {
+			fprintf(stderr, "cupidwmctl: command too long (maximum %zu bytes)\n", command_limit);
+			return 1;
+		}
+		if (separator)
+			cmd[used_cmd++] = ' ';
+		memcpy(cmd + used_cmd, argv[i], arglen);
+		used_cmd += arglen;
+		cmd[used_cmd] = '\0';
 	}
 
 	if (cmd[0] == '\0') {
@@ -308,6 +331,12 @@ int main(int argc, char **argv)
 		sent += (size_t)w;
 	}
 
+	if (stream_mode) {
+		int result = stream_events(fd);
+		close(fd);
+		return result;
+	}
+
 	char buf[32768];
 	size_t used = 0;
 	for (;;) {
@@ -338,8 +367,6 @@ int main(int argc, char **argv)
 
 	close(fd);
 
-	if (stream_mode)
-		return 0;
 	if (want_json) {
 		if (strstr(buf, "\"ok\":true"))
 			return 0;

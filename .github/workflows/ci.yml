@@ -29,6 +29,11 @@ jobs:
       - name: Build release
         run: make CC=${{ matrix.cc }} release
 
+      - name: Check scratchpad client lifetime
+        run: XDG_RUNTIME_DIR="$(mktemp -d)" xvfb-run -a make CC=${{ matrix.cc }} test-lifetime
+      - name: Check disconnected IPC peers
+        run: make CC=${{ matrix.cc }} test-ipc-disconnected
+
       - name: Lint
         run: make CC=${{ matrix.cc }} lint
 

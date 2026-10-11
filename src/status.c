@@ -350,6 +350,11 @@ static Bool run_external_status_command(char *dest, size_t destsz)
 	int pipefds[2];
 	if (pipe(pipefds) < 0)
 		return False;
+	if (pipefds[0] >= FD_SETSIZE) {
+		close(pipefds[0]);
+		close(pipefds[1]);
+		return False;
+	}
 
 	pid_t pid = fork();
 	if (pid < 0) {
@@ -714,6 +719,12 @@ void status_fifo_setup(void)
 	status_fifo_reader_fd = open(fifo_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 	if (status_fifo_reader_fd < 0)
 		return;
+	if (status_fifo_reader_fd >= FD_SETSIZE) {
+		close(status_fifo_reader_fd);
+		status_fifo_reader_fd = -1;
+		status_fifo_writer_fd = -1;
+		return;
+	}
 
 	status_fifo_writer_fd = open(fifo_path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
 }
@@ -723,61 +734,7 @@ int status_fifo_fd(void)
 	return status_fifo_reader_fd;
 }
 
-void status_fifo_handle_readable(void)
-{
-	if (status_fifo_reader_fd < 0)
-		return;
-
-	char chunk[256];
-	for (;;) {
-		ssize_t n = read(status_fifo_reader_fd, chunk, sizeof(chunk));
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
-				break;
-			break;
-		}
-		if (n == 0)
-			break;
-
-		size_t copy_n = (size_t)n;
-		if (copy_n > sizeof(status_fifo_buf) - 1 - status_fifo_buf_used)
-			copy_n = sizeof(status_fifo_buf) - 1 - status_fifo_buf_used;
-		if (copy_n == 0) {
-			status_fifo_buf_used = 0;
-			continue;
-		}
-
-		memcpy(status_fifo_buf + status_fifo_buf_used, chunk, copy_n);
-		status_fifo_buf_used += copy_n;
-		status_fifo_buf[status_fifo_buf_used] = '\0';
-
-		char *line_start = status_fifo_buf;
-		char *nl = NULL;
-		while ((nl = strchr(line_start, '\n')) != NULL) {
-			*nl = '\0';
-			char line[sizeof(status_fifo_buf)];
-			strncpy(line, line_start, sizeof(line) - 1);
-			line[sizeof(line) - 1] = '\0';
-			status_trim_inline(line);
-
-			if (line[0]) {
-				if (strcmp(line, "clear") == 0 || strcmp(line, "reset") == 0)
-					status_clear_text_override();
-				else
-					status_set_text_override(line);
-			}
-
-			line_start = nl + 1;
-		}
-
-		size_t rem = strlen(line_start);
-		if (line_start != status_fifo_buf)
-			memmove(status_fifo_buf, line_start, rem + 1);
-		status_fifo_buf_used = rem;
-	}
-}
+#include "status-input.c"
 
 void updatestatus(void)
 {

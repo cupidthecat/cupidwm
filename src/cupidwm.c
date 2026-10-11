@@ -1910,14 +1910,6 @@ void close_focused(void)
 	if (!focused)
 		return;
 
-	for (int i = 0; i < MAX_SCRATCHPADS; i++) {
-		if (scratchpads[i].client == focused) {
-			scratchpads[i].client = NULL;
-			scratchpads[i].enabled = False;
-			break;
-		}
-	}
-
 	Atom *protocols;
 	int n_protocols;
 	/* get number of protocols a window possesses and check if any == WM_DELETE_WINDOW (supports it) */
@@ -2368,21 +2360,7 @@ int get_monitor_for(Client *c)
 	return best;
 }
 
-pid_t get_parent_process(pid_t c)
-{
-	pid_t v = -1;
-	FILE *f;
-	char buf[256];
-
-	snprintf(buf, sizeof(buf), "/proc/%u/stat", (unsigned)c);
-	if (!(f = fopen(buf, "r")))
-		return 0;
-
-	int no_error = fscanf(f, "%*u %*s %*c %d", &v);
-	(void)no_error;
-	fclose(f);
-	return (pid_t)v;
-}
+#include "proc.c"
 
 pid_t get_pid(Window w)
 {
@@ -2955,26 +2933,11 @@ Bool is_child_proc(pid_t parent_pid, pid_t child_pid)
 	if (parent_pid <= 0 || child_pid <= 0)
 		return False;
 
-	char path[PATH_MAX];
-	FILE *f;
 	pid_t current_pid = child_pid;
 	int max_iterations = 20;
 
 	while (current_pid > 1 && max_iterations-- > 0) {
-		snprintf(path, sizeof(path), "/proc/%d/stat", current_pid);
-		f = fopen(path, "r");
-		if (!f) {
-			fprintf(stderr, "cupidwm: could not open %s\n", path);
-			return False;
-		}
-
-		int ppid = 0;
-		if (fscanf(f, "%*d %*s %*c %d", &ppid) != 1) {
-			fprintf(stderr, "cupidwm: failed to read ppid from %s\n", path);
-			fclose(f);
-			return False;
-		}
-		fclose(f);
+		pid_t ppid = get_parent_process(current_pid);
 
 		if (ppid == parent_pid)
 			return True;
@@ -2989,103 +2952,7 @@ Bool is_child_proc(pid_t parent_pid, pid_t child_pid)
 	return False;
 }
 
-void move_master_next(void)
-{
-	if (!workspaces[current_ws])
-		return;
-	if (current_ws < 0 || current_ws >= NUM_WORKSPACES)
-		return;
-
-	Client *ordered[MAX_CLIENTS] = {0};
-	int n_clients = 0;
-	for (Client *c = workspaces[current_ws]; c && n_clients < MAX_CLIENTS; c = c->next)
-		ordered[n_clients++] = c;
-	if (n_clients < 2)
-		return;
-
-	int tiled_idx[MAX_CLIENTS] = {0};
-	int n_tiled = 0;
-	for (int i = 0; i < n_clients; i++) {
-		Client *c = ordered[i];
-		if (!client_is_visible_on_monitor(c, current_mon) || !c->mapped || c->floating || c->fullscreen)
-			continue;
-		tiled_idx[n_tiled++] = i;
-	}
-
-	int nmaster = MIN(workspace_nmaster_for(current_ws), n_tiled);
-	if (nmaster < 2)
-		return;
-
-	Client *old_focused = focused;
-	Client *first_master = ordered[tiled_idx[0]];
-
-	for (int i = 0; i < nmaster - 1; i++)
-		ordered[tiled_idx[i]] = ordered[tiled_idx[i + 1]];
-	ordered[tiled_idx[nmaster - 1]] = first_master;
-
-	for (int i = 0; i < n_clients - 1; i++)
-		ordered[i]->next = ordered[i + 1];
-	ordered[n_clients - 1]->next = NULL;
-	workspaces[current_ws] = ordered[0];
-
-	tile();
-
-	if (user_config.warp_cursor && old_focused)
-		warp_cursor(old_focused);
-
-	if (old_focused)
-		send_wm_take_focus(old_focused->win);
-
-	update_borders();
-}
-
-void move_master_prev(void)
-{
-	if (!workspaces[current_ws])
-		return;
-	if (current_ws < 0 || current_ws >= NUM_WORKSPACES)
-		return;
-
-	Client *ordered[MAX_CLIENTS] = {0};
-	int n_clients = 0;
-	for (Client *c = workspaces[current_ws]; c && n_clients < MAX_CLIENTS; c = c->next)
-		ordered[n_clients++] = c;
-	if (n_clients < 2)
-		return;
-
-	int tiled_idx[MAX_CLIENTS] = {0};
-	int n_tiled = 0;
-	for (int i = 0; i < n_clients; i++) {
-		Client *c = ordered[i];
-		if (!client_is_visible_on_monitor(c, current_mon) || !c->mapped || c->floating || c->fullscreen)
-			continue;
-		tiled_idx[n_tiled++] = i;
-	}
-
-	int nmaster = MIN(workspace_nmaster_for(current_ws), n_tiled);
-	if (nmaster < 2)
-		return;
-
-	Client *old_focused = focused;
-	Client *last_master = ordered[tiled_idx[nmaster - 1]];
-
-	for (int i = nmaster - 1; i > 0; i--)
-		ordered[tiled_idx[i]] = ordered[tiled_idx[i - 1]];
-	ordered[tiled_idx[0]] = last_master;
-
-	for (int i = 0; i < n_clients - 1; i++)
-		ordered[i]->next = ordered[i + 1];
-	ordered[n_clients - 1]->next = NULL;
-	workspaces[current_ws] = ordered[0];
-
-	tile();
-	if (user_config.warp_cursor && old_focused)
-		warp_cursor(old_focused);
-	if (old_focused)
-		send_wm_take_focus(old_focused->win);
-
-	update_borders();
-}
+#include "master.c"
 
 static void move_client_to_monitor(Client *c, int mon, Bool center, Bool warp)
 {
@@ -3741,6 +3608,12 @@ void setup(void)
 		fprintf(stderr, "can't open display.\nquitting...");
 		exit(EXIT_FAILURE);
 	}
+	if (ConnectionNumber(dpy) >= FD_SETSIZE) {
+		fprintf(stderr, "cupidwm: X11 descriptor exceeds select capacity\n");
+		XCloseDisplay(dpy);
+		dpy = NULL;
+		exit(EXIT_FAILURE);
+	}
 	root = XDefaultRootWindow(dpy);
 
 	workspace_names_init_defaults();
@@ -3969,140 +3842,7 @@ int snap_coordinate(int pos, int size, int screen_size, int snap_dist)
 	return pos;
 }
 
-void spawn(const char * const *argv)
-{
-	if (!argv || !argv[0])
-		return;
-
-	int argc = 0;
-	while (argv[argc])
-		argc++;
-
-	int cmd_count = 1;
-	for (int i = 0; i < argc; i++) {
-		if (strcmp(argv[i], "|") == 0)
-			cmd_count++;
-	}
-
-	const char ***commands = malloc(cmd_count * sizeof(char **)); /* *** bruh */
-	if (!commands) {
-		perror("malloc commands");
-		return;
-	}
-
-	/* initialize all command pointers to NULL for safe cleanup */
-	for (int i = 0; i < cmd_count; i++)
-		commands[i] = NULL;
-
-	int cmd_idx = 0;
-	int arg_start = 0;
-	for (int i = 0; i <= argc; i++) {
-		if (!argv[i] || strcmp(argv[i], "|") == 0) {
-			int len = i - arg_start;
-			const char **cmd_args = malloc((len + 1) * sizeof(char *));
-
-			if (!cmd_args) {
-				perror("malloc cmd_args");
-
-				for (int j = 0; j < cmd_idx; j++)
-					free(commands[j]);
-
-				free(commands);
-				return;
-			}
-
-			for (int j = 0; j < len; j++)
-				cmd_args[j] = argv[arg_start + j];
-
-			cmd_args[len] = NULL;
-			if (cmd_idx >= cmd_count) {
-				free(cmd_args);
-				for (int j = 0; j < cmd_idx; j++)
-					free(commands[j]);
-				free(commands);
-				fprintf(stderr, "cupidwm: internal command parser bounds error\n");
-				return;
-			}
-			commands[cmd_idx++] = cmd_args;
-			arg_start = i + 1;
-		}
-	}
-
-	int (*pipes)[2] = malloc(sizeof(int[2]) * (cmd_count - 1));
-	if (!pipes) {
-		perror("malloc pipes");
-
-		for (int j = 0; j < cmd_count; j++)
-			free(commands[j]);
-
-		free(commands);
-		return;
-	}
-
-	for (int i = 0; i < cmd_count - 1; i++) {
-		if (pipe(pipes[i]) == -1) {
-			perror("pipe");
-
-			for (int j = 0; j < cmd_count; j++)
-				free(commands[j]);
-
-			free(commands);
-			free(pipes);
-			return;
-		}
-	}
-
-	for (int i = 0; i < cmd_count; i++) {
-		if (!commands[i] || !commands[i][0])
-			continue;
-
-		pid_t pid = fork();
-		if (pid < 0) {
-			perror("fork");
-
-			for (int k = 0; k < cmd_count - 1; k++) {
-				close(pipes[k][0]);
-				close(pipes[k][1]);
-			}
-
-			for (int j = 0; j < cmd_count; j++)
-				free(commands[j]);
-
-			free(commands);
-			free(pipes);
-			return;
-		}
-		if (pid == 0) {
-			close(ConnectionNumber(dpy));
-
-			if (i > 0)
-				dup2(pipes[i - 1][0], STDIN_FILENO);
-
-			if (i < cmd_count - 1)
-				dup2(pipes[i][1], STDOUT_FILENO);
-
-			for (int k = 0; k < cmd_count - 1; k++) {
-				close(pipes[k][0]);
-				close(pipes[k][1]);
-			}
-
-			execvp(commands[i][0], (char* const*)(void*)commands[i]);
-			fprintf(stderr, "cupidwm: execvp '%s' failed\n", commands[i][0]);
-			exit(EXIT_FAILURE);
-		}
-	}
-
-	for (int i = 0; i < cmd_count - 1; i++) {
-		close(pipes[i][0]);
-		close(pipes[i][1]);
-	}
-
-	for (int i = 0; i < cmd_count; i++)
-		free(commands[i]);
-
-	free(commands);
-	free(pipes);
-}
+#include "spawn.c"
 
 void startup_exec(void)
 {

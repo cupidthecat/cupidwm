@@ -297,11 +297,8 @@ void toggle_floating(void)
 	if (!focused)
 		return;
 
-	if (focused->fullscreen) {
-		focused->fullscreen = False;
-		tile();
-		XSetWindowBorderWidth(dpy, focused->win, user_config.border_width);
-	}
+	if (focused->fullscreen)
+		apply_fullscreen(focused, False);
 
 	focused->floating = !focused->floating;
 

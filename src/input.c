@@ -1099,6 +1099,12 @@ void hdl_destroy_ntf(XEvent *xev)
 			detachstack(c);
 
 			ipc_notify_event("client_remove", ipc_details);
+			for (int slot = 0; slot < MAX_SCRATCHPADS; slot++) {
+				if (scratchpads[slot].client == c) {
+					scratchpads[slot].client = NULL;
+					scratchpads[slot].enabled = False;
+				}
+			}
 			free(c);
 			update_net_client_list();
 			if (open_windows > 0)

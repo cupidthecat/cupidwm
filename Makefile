@@ -12,6 +12,9 @@ SAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
 
 all: release
 
+# Clean must finish before make considers existing build outputs.
+.NOTPARALLEL: release strict debug check
+
 release: clean cupidwm cupidwmctl
 
 strict: EXTRA_CFLAGS += -O0 -g3 ${SAN_FLAGS}
@@ -66,10 +69,10 @@ test-input: preflight-test-scripts cupidwm
 test-ipc: preflight-test-scripts cupidwm cupidwmctl
 	bash ./tests/ipc/roundtrip.sh ./cupidwm ./cupidwmctl
 
-test-packaging: preflight-test-scripts
+test-packaging: preflight-test-scripts test-distcheck test-parallel-build
 	bash ./tests/packaging/sanity.sh
 
-test: test-packaging test-smoke test-ewmh test-protocols test-input
+test: test-cli test-packaging test-smoke test-ewmh test-protocols test-input test-process
 
 lint:
 	@if command -v cppcheck >/dev/null 2>&1; then \
@@ -88,7 +91,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging
+check: debug lint test-packaging test-cli test-process test-fd-bounds test-control-input test-master-order test-spawn-cleanup test-status-input
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -131,7 +134,9 @@ dist: clean
 	rm -rf cupidwm-${VERSION}
 
 distcheck: dist
-	@tmpdir=$$(mktemp -d); \
+	@set -eu; \
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	tar -xf cupidwm-${VERSION}.tar.gz -C "$$tmpdir"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/Makefile"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/README.md"; \
@@ -149,7 +154,6 @@ distcheck: dist
 	test -f "$$tmpdir/cupidwm-${VERSION}/packaging/arch/PKGBUILD"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/tests/ipc/roundtrip.sh"; \
 	test -f "$$tmpdir/cupidwm-${VERSION}/tools/cupidwmctl.c"; \
-	rm -rf "$$tmpdir"; \
 	echo "distcheck passed"
 
 install: all
@@ -184,3 +188,79 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+test-distcheck:
+	python3 tests/packaging/distcheck.py
+
+.PHONY: test-distcheck
+
+test-parallel-build:
+	CC="${CC}" python3 tests/packaging/parallel-build.py
+
+.PHONY: test-parallel-build
+# This fixture includes the WM translation unit to check internal ownership.
+build/test-scratchpads: tests/lifetime/scratchpads.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/lifetime/scratchpads.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-lifetime: build/test-scratchpads
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-scratchpads
+
+.PHONY: test-lifetime
+build/test-ipc-disconnected: tests/ipc/disconnected.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/ipc/disconnected.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-ipc-disconnected: build/test-ipc-disconnected
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-ipc-disconnected
+
+.PHONY: test-ipc-disconnected
+# Pipe-backed CLI tests do not need X11 or an IPC-enabled build.
+build/test-cli-transport: tests/cli/transport.c tools/cupidwmctl.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/cli/transport.c ${EXTRA_LDFLAGS}
+
+test-cli: build/test-cli-transport
+	python3 tests/cli/streaming.py ./build/test-cli-transport
+
+.PHONY: test-cli
+build/test-process-parent: tests/process/parent.c src/proc.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/process/parent.c ${EXTRA_LDFLAGS}
+
+test-process: build/test-process-parent
+	./build/test-process-parent
+
+.PHONY: test-process
+build/test-fd-bounds: tests/ipc/fd-bounds.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/ipc/fd-bounds.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-fd-bounds: build/test-fd-bounds
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-fd-bounds
+
+.PHONY: test-fd-bounds
+
+build/test-control-input: tests/ipc/control-input.c tools/cupidwmctl.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/ipc/control-input.c ${EXTRA_LDFLAGS}
+
+test-control-input: build/test-control-input
+	./build/test-control-input
+
+.PHONY: test-control-input
+build/test-master-order: tests/layout/master-order.c src/master.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/layout/master-order.c ${EXTRA_LDFLAGS}
+
+test-master-order: build/test-master-order
+	./build/test-master-order
+
+.PHONY: test-master-order
+build/test-spawn-cleanup: tests/process/spawn.c src/spawn.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/process/spawn.c ${EXTRA_LDFLAGS}
+
+test-spawn-cleanup: build/test-spawn-cleanup
+	./build/test-spawn-cleanup
+
+.PHONY: test-spawn-cleanup
+build/test-status-input: tests/status/fifo-input.c src/status-input.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/status/fifo-input.c ${EXTRA_LDFLAGS}
+
+test-status-input: build/test-status-input
+	./build/test-status-input
+
+.PHONY: test-status-input
