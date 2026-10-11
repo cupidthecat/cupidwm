@@ -91,7 +91,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging test-cli test-process test-fd-bounds test-control-input test-master-order
+check: debug lint test-packaging test-cli test-process test-fd-bounds test-control-input test-master-order test-spawn-cleanup
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -250,3 +250,10 @@ test-master-order: build/test-master-order
 	./build/test-master-order
 
 .PHONY: test-master-order
+build/test-spawn-cleanup: tests/process/spawn.c src/spawn.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/process/spawn.c ${EXTRA_LDFLAGS}
+
+test-spawn-cleanup: build/test-spawn-cleanup
+	./build/test-spawn-cleanup
+
+.PHONY: test-spawn-cleanup
