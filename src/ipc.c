@@ -412,7 +412,7 @@ static void ipc_pending_clear_slot(int slot, Bool close_fd)
 
 static int ipc_pending_add_client(int fd)
 {
-	if (fd < 0)
+	if (fd < 0 || fd >= FD_SETSIZE)
 		return -1;
 
 	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++) {
@@ -1858,7 +1858,7 @@ void ipc_fdset_prepare(fd_set *fds, int *maxfd)
 	if (!fds || !maxfd)
 		return;
 
-	if (ipc_server_fd >= 0) {
+	if (ipc_server_fd >= 0 && ipc_server_fd < FD_SETSIZE) {
 		FD_SET(ipc_server_fd, fds);
 		if (ipc_server_fd > *maxfd)
 			*maxfd = ipc_server_fd;
@@ -1866,7 +1866,7 @@ void ipc_fdset_prepare(fd_set *fds, int *maxfd)
 
 	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++) {
 		int fd = ipc_pending_clients[i].fd;
-		if (fd < 0)
+		if (fd < 0 || fd >= FD_SETSIZE)
 			continue;
 		FD_SET(fd, fds);
 		if (fd > *maxfd)
@@ -1879,12 +1879,12 @@ Bool ipc_fdset_has_ready(const fd_set *fds)
 	if (!fds)
 		return False;
 
-	if (ipc_server_fd >= 0 && FD_ISSET(ipc_server_fd, fds))
+	if (ipc_server_fd >= 0 && ipc_server_fd < FD_SETSIZE && FD_ISSET(ipc_server_fd, fds))
 		return True;
 
 	for (int i = 0; i < IPC_MAX_PENDING_CLIENTS; i++) {
 		int fd = ipc_pending_clients[i].fd;
-		if (fd >= 0 && FD_ISSET(fd, fds))
+		if (fd >= 0 && fd < FD_SETSIZE && FD_ISSET(fd, fds))
 			return True;
 	}
 
@@ -1962,6 +1962,12 @@ int ipc_setup(void)
 	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (fd < 0) {
 		perror("cupidwm: ipc socket");
+		return -1;
+	}
+
+	if (fd >= FD_SETSIZE) {
+		fprintf(stderr, "cupidwm: IPC descriptor exceeds select capacity\n");
+		close(fd);
 		return -1;
 	}
 

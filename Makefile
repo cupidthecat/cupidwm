@@ -91,7 +91,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging test-cli test-process
+check: debug lint test-packaging test-cli test-process test-fd-bounds
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -228,3 +228,10 @@ test-process: build/test-process-parent
 	./build/test-process-parent
 
 .PHONY: test-process
+build/test-fd-bounds: tests/ipc/fd-bounds.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/ipc/fd-bounds.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-fd-bounds: build/test-fd-bounds
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-fd-bounds
+
+.PHONY: test-fd-bounds
