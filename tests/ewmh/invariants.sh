@@ -236,6 +236,17 @@ sleep 0.2
 assert_prop_contains root _NET_ACTIVE_WINDOW "$hex_a"
 assert_prop_contains "$wid_a" _NET_WM_STATE _NET_WM_STATE_FOCUSED
 
+# Floating toggles must leave fullscreen through the normal state transition.
+# Exercise both a tiled-to-floating and a floating-to-tiled toggle.
+for transition in tiled-to-floating floating-to-tiled; do
+	"${MSG_TOOL}" "$wid_a" _NET_WM_STATE 1 _NET_WM_STATE_FULLSCREEN 0 1 || fail "failed to enter fullscreen for $transition"
+	sleep 0.2
+	assert_prop_contains "$wid_a" _NET_WM_STATE _NET_WM_STATE_FULLSCREEN
+	xdotool key --clearmodifiers super+space || fail "floating toggle failed for $transition"
+	sleep 0.2
+	assert_prop_not_contains "$wid_a" _NET_WM_STATE _NET_WM_STATE_FULLSCREEN
+done
+
 # _NET_REQUEST_FRAME_EXTENTS + _NET_WM_ALLOWED_ACTIONS
 "${MSG_TOOL}" "$wid_a" _NET_REQUEST_FRAME_EXTENTS 0 0 0 0 0 || fail "failed to send _NET_REQUEST_FRAME_EXTENTS"
 sleep 0.2
