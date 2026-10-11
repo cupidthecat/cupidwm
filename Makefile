@@ -184,3 +184,11 @@ uninstall-font:
 	rm -f ${DESTDIR}${FONTDIR}/undefined-medium.ttf
 
 .PHONY: all release strict debug clean lint check dist distcheck install install-font uninstall uninstall-font test test-smoke test-ewmh test-protocols test-input test-ipc test-packaging preflight-test-scripts
+
+build/test-ipc-disconnected: tests/ipc/disconnected.c $(wildcard src/*.c) src/defs.h config.h config.mk | build
+	${CC} ${CFLAGS} -O0 -g ${SAN_FLAGS} -o $@ tests/ipc/disconnected.c ${LDFLAGS} ${SAN_FLAGS}
+
+test-ipc-disconnected: build/test-ipc-disconnected
+	ASAN_OPTIONS=detect_leaks=0 ./build/test-ipc-disconnected
+
+.PHONY: test-ipc-disconnected

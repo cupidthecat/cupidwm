@@ -274,6 +274,19 @@ static void ipc_publish_socket_path(const char *path)
 	}
 }
 
+/* A disconnected control client must not terminate the window manager. */
+static ssize_t ipc_send(int fd, const void *buf, size_t len)
+{
+#ifdef MSG_NOSIGNAL
+	return send(fd, buf, len, MSG_NOSIGNAL);
+#else
+	int enabled = 1;
+	if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) < 0)
+		return -1;
+	return send(fd, buf, len, 0);
+#endif
+}
+
 static void ipc_write_reply(int fd, const char *msg)
 {
 	if (fd < 0 || !msg)
@@ -282,7 +295,7 @@ static void ipc_write_reply(int fd, const char *msg)
 	size_t len = strlen(msg);
 	size_t sent = 0;
 	while (sent < len) {
-		ssize_t n = write(fd, msg + sent, len - sent);
+		ssize_t n = ipc_send(fd, msg + sent, len - sent);
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
@@ -625,7 +638,7 @@ void ipc_notify_event(const char *event, const char *details)
 		size_t sent = 0;
 		Bool failed = False;
 		while (sent < len) {
-			ssize_t n = write(fd, line + sent, len - sent);
+			ssize_t n = ipc_send(fd, line + sent, len - sent);
 			if (n < 0) {
 				if (errno == EINTR)
 					continue;
