@@ -72,7 +72,7 @@ test-ipc: preflight-test-scripts cupidwm cupidwmctl
 test-packaging: preflight-test-scripts test-distcheck test-parallel-build
 	bash ./tests/packaging/sanity.sh
 
-test: test-cli test-packaging test-smoke test-ewmh test-protocols test-input
+test: test-cli test-packaging test-smoke test-ewmh test-protocols test-input test-process
 
 lint:
 	@if command -v cppcheck >/dev/null 2>&1; then \
@@ -91,7 +91,7 @@ lint:
 		echo "shellcheck not found; skipping shell script analysis"; \
 	fi
 
-check: debug lint test-packaging test-cli
+check: debug lint test-packaging test-cli test-process
 	@if [ -n "$$DISPLAY" ] && \
 		command -v Xephyr >/dev/null 2>&1 && \
 		command -v xdpyinfo >/dev/null 2>&1 && \
@@ -221,3 +221,10 @@ test-cli: build/test-cli-transport
 	python3 tests/cli/streaming.py ./build/test-cli-transport
 
 .PHONY: test-cli
+build/test-process-parent: tests/process/parent.c src/proc.c config.mk | build
+	${CC} ${CFLAGS} -o $@ tests/process/parent.c ${EXTRA_LDFLAGS}
+
+test-process: build/test-process-parent
+	./build/test-process-parent
+
+.PHONY: test-process

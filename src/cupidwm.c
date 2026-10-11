@@ -2360,21 +2360,7 @@ int get_monitor_for(Client *c)
 	return best;
 }
 
-pid_t get_parent_process(pid_t c)
-{
-	pid_t v = -1;
-	FILE *f;
-	char buf[256];
-
-	snprintf(buf, sizeof(buf), "/proc/%u/stat", (unsigned)c);
-	if (!(f = fopen(buf, "r")))
-		return 0;
-
-	int no_error = fscanf(f, "%*u %*s %*c %d", &v);
-	(void)no_error;
-	fclose(f);
-	return (pid_t)v;
-}
+#include "proc.c"
 
 pid_t get_pid(Window w)
 {
@@ -2947,26 +2933,11 @@ Bool is_child_proc(pid_t parent_pid, pid_t child_pid)
 	if (parent_pid <= 0 || child_pid <= 0)
 		return False;
 
-	char path[PATH_MAX];
-	FILE *f;
 	pid_t current_pid = child_pid;
 	int max_iterations = 20;
 
 	while (current_pid > 1 && max_iterations-- > 0) {
-		snprintf(path, sizeof(path), "/proc/%d/stat", current_pid);
-		f = fopen(path, "r");
-		if (!f) {
-			fprintf(stderr, "cupidwm: could not open %s\n", path);
-			return False;
-		}
-
-		int ppid = 0;
-		if (fscanf(f, "%*d %*s %*c %d", &ppid) != 1) {
-			fprintf(stderr, "cupidwm: failed to read ppid from %s\n", path);
-			fclose(f);
-			return False;
-		}
-		fclose(f);
+		pid_t ppid = get_parent_process(current_pid);
 
 		if (ppid == parent_pid)
 			return True;
